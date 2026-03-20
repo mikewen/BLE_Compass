@@ -6,22 +6,56 @@
     android:padding="12dp"
     android:background="#F5F5F5">
 
-    <Button
-        android:id="@+id/btnScan"
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="50dp"
-        android:text="Scan BLE"
-        android:textSize="16sp"
-        android:textStyle="bold" />
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <Button
+            android:id="@+id/btnScan"
+            android:layout_width="0dp"
+            android:layout_height="50dp"
+            android:layout_weight="1"
+            android:text="Scan BLE"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+        <Button
+            android:id="@+id/btnKeepScreenOn"
+            android:layout_width="0dp"
+            android:layout_height="50dp"
+            android:layout_weight="1"
+            android:layout_marginStart="4dp"
+            android:text="Screen: OFF"
+            android:backgroundTint="#607D8B"
+            android:textSize="14sp" />
+    </LinearLayout>
 
-    <Button
-        android:id="@+id/btnKeepScreenOn"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="45dp"
+        android:orientation="horizontal"
         android:layout_marginTop="4dp"
-        android:text="Keep Screen On: OFF"
-        android:backgroundTint="#607D8B"
-        android:textSize="12sp" />
+        android:background="#E0E0E0"
+        android:padding="4dp"
+        android:gravity="center">
+        <TextView
+            android:id="@+id/txtGpsInfo"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="GPS: 0.0 kn"
+            android:textSize="14sp"
+            android:gravity="center"
+            android:textStyle="bold" />
+        <TextView
+            android:id="@+id/txtGpsOffset"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Offset: 0.0°"
+            android:textSize="14sp"
+            android:gravity="center"
+            android:textStyle="bold" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/txtStatus"
@@ -37,7 +71,7 @@
         android:id="@+id/txtHeading"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="4dp"
         android:gravity="center"
         android:text="--"
         android:textColor="#FF0000"
@@ -62,20 +96,59 @@
         android:layout_marginBottom="12dp"
         android:background="#E0E0E0" />
 
-    <Button
-        android:id="@+id/btnCalibrateMag"
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="50dp"
-        android:text="Calibrate Magnetometer"
-        android:textSize="15sp" />
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <Button
+            android:id="@+id/btnCalibrateMag"
+            android:layout_width="0dp"
+            android:layout_height="50dp"
+            android:layout_weight="1"
+            android:text="Cal Mag"
+            android:textSize="14sp" />
+        <Button
+            android:id="@+id/btnCalibrateGyro"
+            android:layout_width="0dp"
+            android:layout_height="50dp"
+            android:layout_weight="1"
+            android:layout_marginStart="4dp"
+            android:text="Cal Gyro"
+            android:textSize="14sp" />
+    </LinearLayout>
 
-    <Button
-        android:id="@+id/btnCalibrateGyro"
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="50dp"
-        android:layout_marginTop="4dp"
-        android:text="Calibrate Gyroscope"
-        android:textSize="15sp" />
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="8dp"
+        android:gravity="center_vertical">
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Auto-Cal Speed:"
+            android:textSize="12sp" />
+        <Spinner
+            android:id="@+id/spinnerMinSpeed"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="kn"
+            android:textSize="12sp" />
+        <View
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+        <Button
+            android:id="@+id/btnResetGps"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:text="Reset GPS"
+            android:textSize="10sp" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/txtCalibStatus"

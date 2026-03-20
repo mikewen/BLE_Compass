@@ -10,9 +10,14 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.*
 import android.view.View
 import android.view.WindowManager
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -26,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var bluetoothGatt: BluetoothGatt? = null
     private lateinit var prefs: SharedPreferences
+    private lateinit var locationManager: LocationManager
 
     private val SERVICE_UUID = UUID.fromString("0000ae30-0000-1000-8000-00805f9b34fb")
     private val CHAR_UUID = UUID.fromString("0000ae02-0000-1000-8000-00805f9b34fb")
@@ -60,6 +66,12 @@ class MainActivity : AppCompatActivity() {
 
     private var isKeepScreenOn = false
 
+    // GPS Auto-calibration variables
+    private var gpsHeadingOffset = 0.0
+    private var lastGpsHeading = 0.0
+    private var currentGpsSpeedKnots = 0.0
+    private var minGpsSpeedKnots = 2.0
+
     private val scanLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val address = result.data?.getStringExtra("device_address")
@@ -69,8 +81,10 @@ class MainActivity : AppCompatActivity() {
 
     private val requestPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-            if (permissions.entries.all { it.value }) openScanActivity()
-            else Toast.makeText(this, "Permissions required", Toast.LENGTH_SHORT).show()
+            if (permissions.entries.all { it.value }) {
+                openScanActivity()
+                startGpsUpdates()
+            } else Toast.makeText(this, "Permissions required", Toast.LENGTH_SHORT).show()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -78,23 +92,49 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         prefs = getSharedPreferences("calib_prefs", Context.MODE_PRIVATE)
+        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         loadCalibration()
 
         binding.btnScan.setOnClickListener { checkPermissionsAndScan() }
         binding.btnCalibrateMag.setOnClickListener { if (!isCalibratingMag) startMagCalibration() else stopMagCalibration() }
         binding.btnCalibrateGyro.setOnClickListener { if (!isCalibratingGyro) startGyroCalibration() else stopGyroCalibration() }
+        binding.btnResetGps.setOnClickListener { 
+            gpsHeadingOffset = 0.0
+            saveCalibration()
+            Toast.makeText(this, "GPS Offset Reset", Toast.LENGTH_SHORT).show()
+        }
 
         binding.btnKeepScreenOn.setOnClickListener {
             isKeepScreenOn = !isKeepScreenOn
             if (isKeepScreenOn) {
                 window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                binding.btnKeepScreenOn.text = "Keep Screen On: ON"
+                binding.btnKeepScreenOn.text = "Screen: ON"
                 binding.btnKeepScreenOn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#4CAF50"))
             } else {
                 window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                binding.btnKeepScreenOn.text = "Keep Screen On: OFF"
+                binding.btnKeepScreenOn.text = "Screen: OFF"
                 binding.btnKeepScreenOn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#607D8B"))
             }
+        }
+        
+        setupSpeedSpinner()
+    }
+
+    private fun setupSpeedSpinner() {
+        val speeds = arrayOf("2.0", "2.5", "3.0", "3.5", "4.0")
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, speeds)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.spinnerMinSpeed.adapter = adapter
+        
+        val initialPos = speeds.indexOf(minGpsSpeedKnots.toString())
+        if (initialPos >= 0) binding.spinnerMinSpeed.setSelection(initialPos)
+
+        binding.spinnerMinSpeed.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                minGpsSpeedKnots = speeds[position].toDouble()
+                saveCalibration()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
     }
 
@@ -105,6 +145,8 @@ class MainActivity : AppCompatActivity() {
         scaleX = prefs.getFloat("mag_scale_x", 1.0f).toDouble()
         scaleY = prefs.getFloat("mag_scale_y", 1.0f).toDouble()
         gyroOffsetZ = prefs.getFloat("gyro_off_z", 0.0f).toDouble()
+        gpsHeadingOffset = prefs.getFloat("gps_heading_offset", 0.0f).toDouble()
+        minGpsSpeedKnots = prefs.getFloat("min_gps_speed", 2.0f).toDouble()
     }
 
     private fun saveCalibration() {
@@ -112,19 +154,56 @@ class MainActivity : AppCompatActivity() {
             putFloat("mag_off_x", offsetX.toFloat()); putFloat("mag_off_y", offsetY.toFloat()); putFloat("mag_off_z", offsetZ.toFloat())
             putFloat("mag_scale_x", scaleX.toFloat()); putFloat("mag_scale_y", scaleY.toFloat())
             putFloat("gyro_off_z", gyroOffsetZ.toFloat())
+            putFloat("gps_heading_offset", gpsHeadingOffset.toFloat())
+            putFloat("min_gps_speed", minGpsSpeedKnots.toFloat())
             apply()
         }
     }
 
     private fun checkPermissionsAndScan() {
-        val permissions = mutableListOf<String>()
+        val permissions = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-        } else permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
 
         val missing = permissions.filter { ActivityCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
-        if (missing.isEmpty()) openScanActivity() else requestPermissionLauncher.launch(missing.toTypedArray())
+        if (missing.isEmpty()) {
+            openScanActivity()
+            startGpsUpdates()
+        } else requestPermissionLauncher.launch(missing.toTypedArray())
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startGpsUpdates() {
+        locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, locationListener)
+    }
+
+    private val locationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            if (location.hasSpeed()) {
+                currentGpsSpeedKnots = location.speed * 1.94384 // m/s to knots
+                if (location.hasBearing()) {
+                    lastGpsHeading = location.bearing.toDouble()
+                    
+                    if (currentSeaState <= 2 && currentGpsSpeedKnots >= minGpsSpeedKnots) {
+                        var currentCompassHeading = Math.toDegrees(kfHeading)
+                        if (currentCompassHeading < 0) currentCompassHeading += 360.0
+                        
+                        var diff = lastGpsHeading - currentCompassHeading
+                        while (diff > 180) diff -= 360
+                        while (diff < -180) diff += 360
+                        
+                        // Slowly move offset (low-pass) to avoid jumps
+                        gpsHeadingOffset = 0.995 * gpsHeadingOffset + 0.005 * diff
+                        saveCalibration()
+                    }
+                }
+            }
+        }
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) {}
+        override fun onStatusChanged(provider: String, status: Int, extras: Bundle?) {}
     }
 
     private fun openScanActivity() { scanLauncher.launch(Intent(this, ScanActivity::class.java)) }
@@ -146,7 +225,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopMagCalibration() {
         isCalibratingMag = false
-        binding.btnCalibrateMag.text = "Calibrate Magnetometer"
+        binding.btnCalibrateMag.text = "Cal Mag"
         binding.txtCalibStatus.visibility = View.GONE
         if (maxMx > minMx && maxMy > minMy) {
             offsetX = (maxMx + minMx) / 2.0; offsetY = (maxMy + minMy) / 2.0
@@ -168,7 +247,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopGyroCalibration() {
-        isCalibratingGyro = false; binding.btnCalibrateGyro.text = "Calibrate Gyroscope"; binding.txtCalibStatus.visibility = View.GONE
+        isCalibratingGyro = false; binding.btnCalibrateGyro.text = "Cal Gyro"; binding.txtCalibStatus.visibility = View.GONE
         if (gyroCount > 0) {
             gyroOffsetZ = gyroSumZ / gyroCount
             saveCalibration()
@@ -283,11 +362,15 @@ class MainActivity : AppCompatActivity() {
                     lastUiUpdateTime = now
                     var deg = Math.toDegrees(kfHeading)
                     if (deg < 0) deg += 360.0
+                    
+                    var finalHeading = (deg + gpsHeadingOffset + 360) % 360
 
                     runOnUiThread {
-                        binding.txtHeading.text = "%.0f°".format(deg)
+                        binding.txtHeading.text = "%.0f°".format(finalHeading)
                         binding.txtStatus.text = "X:%.0f Y:%.0f Z:%.0f".format(mx, my, mz)
                         binding.txtSeaState.text = "Sea State: $currentSeaState"
+                        binding.txtGpsInfo.text = "GPS: %.1f kn".format(currentGpsSpeedKnots)
+                        binding.txtGpsOffset.text = "Offset: %.1f°".format(gpsHeadingOffset)
                     }
                 }
             }
