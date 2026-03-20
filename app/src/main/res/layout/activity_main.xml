@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="12dp"
+    android:background="#F5F5F5">
+
+    <Button
+        android:id="@+id/btnScan"
+        android:layout_width="match_parent"
+        android:layout_height="50dp"
+        android:text="Scan BLE"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <Button
+        android:id="@+id/btnKeepScreenOn"
+        android:layout_width="match_parent"
+        android:layout_height="45dp"
+        android:layout_marginTop="4dp"
+        android:text="Keep Screen On: OFF"
+        android:backgroundTint="#607D8B"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/txtStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Status: Disconnected"
+        android:textColor="#757575"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/txtHeading"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:text="--"
+        android:textColor="#FF0000"
+        android:textSize="110sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/txtSeaState"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:text="Sea: -"
+        android:textColor="#00796B"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginTop="0dp" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="12dp"
+        android:layout_marginBottom="12dp"
+        android:background="#E0E0E0" />
+
+    <Button
+        android:id="@+id/btnCalibrateMag"
+        android:layout_width="match_parent"
+        android:layout_height="50dp"
+        android:text="Calibrate Magnetometer"
+        android:textSize="15sp" />
+
+    <Button
+        android:id="@+id/btnCalibrateGyro"
+        android:layout_width="match_parent"
+        android:layout_height="50dp"
+        android:layout_marginTop="4dp"
+        android:text="Calibrate Gyroscope"
+        android:textSize="15sp" />
+
+    <TextView
+        android:id="@+id/txtCalibStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:background="#FFF9C4"
+        android:padding="10dp"
+        android:text="Prompts will appear here..."
+        android:textColor="#F57F17"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+</LinearLayout>
