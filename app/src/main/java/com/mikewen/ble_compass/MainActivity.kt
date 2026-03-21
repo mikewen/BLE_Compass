@@ -23,6 +23,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import com.mikewen.ble_compass.databinding.ActivityMainBinding
+import java.io.File
+import java.io.FileOutputStream
 import java.util.*
 import kotlin.math.*
 
@@ -36,41 +38,35 @@ class MainActivity : AppCompatActivity() {
     private val SERVICE_UUID = UUID.fromString("0000ae30-0000-1000-8000-00805f9b34fb")
     private val CHAR_UUID = UUID.fromString("0000ae02-0000-1000-8000-00805f9b34fb")
 
-    // Magnetometer Calibration
+    // --- Hardware Alignment Configuration ---
+    // Log Analysis showed: Acc Z is (+), Mag Z is (-). They must match.
+    private val ACCT_ROTATED_180 = true  
+    private var INVERT_MAG_Z = true      
+    private var INVERT_GYRO_Z = true     
+    // ----------------------------------------
+
     private var isCalibratingMag = false
-    private var minMx = Double.MAX_VALUE; private var maxMx = Double.MIN_VALUE
-    private var minMy = Double.MAX_VALUE; private var maxMy = Double.MIN_VALUE
-    private var minMz = Double.MAX_VALUE; private var maxMz = Double.MIN_VALUE
+    private var minMx = 1e6; private var maxMx = -1e6
+    private var minMy = 1e6; private var maxMy = -1e6
+    private var minMz = 1e6; private var maxMz = -1e6
     
     private var offsetX = 0.0; private var offsetY = 0.0; private var offsetZ = 0.0
-    private var scaleX = 1.0; private var scaleY = 1.0
+    private var scaleX = 1.0; private var scaleY = 1.0; private var scaleZ = 1.0
 
-    // Gyroscope Calibration
     private var isCalibratingGyro = false
-    private var gyroOffsetZ = 0.0
-    private var gyroSumZ = 0.0
-    private var gyroCount = 0
+    private var gyroOffsetZ = 0.0; private var gyroSumZ = 0.0; private var gyroCount = 0
+    private var gyroCalibTimer: CountDownTimer? = null
 
-    // Kalman Filter Variables
-    private var kfHeading = 0.0
-    private var kfP = 1.0
-    private val kfQ = 0.0005    // Trust gyro more for transients
-    private val kfR = 0.1       // Measurement noise
-    private var lastTimestamp = 0L
-    private var lastUiUpdateTime = 0L
+    private var kfHeading = 0.0; private var kfP = 1.0
+    private val kfQ = 0.0005; private val kfR = 0.1
+    private var lastTimestamp = 0L; private var lastUiUpdateTime = 0L
 
-    // Sea State variables
     private val motionBuffer = mutableListOf<Double>()
-    private val BUFFER_SIZE = 50 // 1 second at 50Hz
-    private var currentSeaState = 1
+    private val BUFFER_SIZE = 50 
+    private var currentSeaState = 1; private var isKeepScreenOn = false
+    private var gpsHeadingOffset = 0.0; private var currentGpsSpeedKnots = 0.0; private var minGpsSpeedKnots = 2.0
 
-    private var isKeepScreenOn = false
-
-    // GPS Auto-calibration variables
-    private var gpsHeadingOffset = 0.0
-    private var lastGpsHeading = 0.0
-    private var currentGpsSpeedKnots = 0.0
-    private var minGpsSpeedKnots = 2.0
+    private var logFile: File? = null
 
     private val scanLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
@@ -78,14 +74,6 @@ class MainActivity : AppCompatActivity() {
             if (address != null) connectToDevice(address)
         }
     }
-
-    private val requestPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-            if (permissions.entries.all { it.value }) {
-                openScanActivity()
-                startGpsUpdates()
-            } else Toast.makeText(this, "Permissions required", Toast.LENGTH_SHORT).show()
-        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -95,55 +83,36 @@ class MainActivity : AppCompatActivity() {
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         loadCalibration()
 
+        logFile = File(getExternalFilesDir(null), "raw_sensor_data.txt")
+        if (logFile?.exists() == true) logFile?.delete()
+
         binding.btnScan.setOnClickListener { checkPermissionsAndScan() }
         binding.btnCalibrateMag.setOnClickListener { if (!isCalibratingMag) startMagCalibration() else stopMagCalibration() }
         binding.btnCalibrateGyro.setOnClickListener { if (!isCalibratingGyro) startGyroCalibration() else stopGyroCalibration() }
-        binding.btnResetGps.setOnClickListener { 
-            gpsHeadingOffset = 0.0
-            saveCalibration()
-            Toast.makeText(this, "GPS Offset Reset", Toast.LENGTH_SHORT).show()
-        }
+        binding.btnResetGps.setOnClickListener { gpsHeadingOffset = 0.0; saveCalibration(); Toast.makeText(this, "GPS Reset", Toast.LENGTH_SHORT).show() }
 
         binding.btnKeepScreenOn.setOnClickListener {
             isKeepScreenOn = !isKeepScreenOn
-            if (isKeepScreenOn) {
-                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                binding.btnKeepScreenOn.text = "Screen: ON"
-                binding.btnKeepScreenOn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#4CAF50"))
-            } else {
-                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                binding.btnKeepScreenOn.text = "Screen: OFF"
-                binding.btnKeepScreenOn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#607D8B"))
-            }
+            window.apply { if (isKeepScreenOn) addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+            binding.btnKeepScreenOn.text = "Screen: ${if (isKeepScreenOn) "ON" else "OFF"}"
+            binding.btnKeepScreenOn.backgroundTintList = ColorStateList.valueOf(if (isKeepScreenOn) 0xFF4CAF50.toInt() else 0xFF607D8B.toInt())
         }
-        
         setupSpeedSpinner()
     }
 
     private fun setupSpeedSpinner() {
         val speeds = arrayOf("2.0", "2.5", "3.0", "3.5", "4.0")
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, speeds)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        binding.spinnerMinSpeed.adapter = adapter
-        
-        val initialPos = speeds.indexOf(minGpsSpeedKnots.toString())
-        if (initialPos >= 0) binding.spinnerMinSpeed.setSelection(initialPos)
-
+        binding.spinnerMinSpeed.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, speeds).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+        binding.spinnerMinSpeed.setSelection(speeds.indexOf(minGpsSpeedKnots.toString()).coerceAtLeast(0))
         binding.spinnerMinSpeed.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                minGpsSpeedKnots = speeds[position].toDouble()
-                saveCalibration()
-            }
-            override fun onNothingSelected(parent: AdapterView<*>?) {}
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { minGpsSpeedKnots = speeds[pos].toDouble(); saveCalibration() }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
         }
     }
 
     private fun loadCalibration() {
-        offsetX = prefs.getFloat("mag_off_x", 0.0f).toDouble()
-        offsetY = prefs.getFloat("mag_off_y", 0.0f).toDouble()
-        offsetZ = prefs.getFloat("mag_off_z", 0.0f).toDouble()
-        scaleX = prefs.getFloat("mag_scale_x", 1.0f).toDouble()
-        scaleY = prefs.getFloat("mag_scale_y", 1.0f).toDouble()
+        offsetX = prefs.getFloat("mag_off_x", 0.0f).toDouble(); offsetY = prefs.getFloat("mag_off_y", 0.0f).toDouble(); offsetZ = prefs.getFloat("mag_off_z", 0.0f).toDouble()
+        scaleX = prefs.getFloat("mag_scale_x", 1.0f).toDouble(); scaleY = prefs.getFloat("mag_scale_y", 1.0f).toDouble(); scaleZ = prefs.getFloat("mag_scale_z", 1.0f).toDouble()
         gyroOffsetZ = prefs.getFloat("gyro_off_z", 0.0f).toDouble()
         gpsHeadingOffset = prefs.getFloat("gps_heading_offset", 0.0f).toDouble()
         minGpsSpeedKnots = prefs.getFloat("min_gps_speed", 2.0f).toDouble()
@@ -152,226 +121,144 @@ class MainActivity : AppCompatActivity() {
     private fun saveCalibration() {
         prefs.edit().apply {
             putFloat("mag_off_x", offsetX.toFloat()); putFloat("mag_off_y", offsetY.toFloat()); putFloat("mag_off_z", offsetZ.toFloat())
-            putFloat("mag_scale_x", scaleX.toFloat()); putFloat("mag_scale_y", scaleY.toFloat())
-            putFloat("gyro_off_z", gyroOffsetZ.toFloat())
-            putFloat("gps_heading_offset", gpsHeadingOffset.toFloat())
-            putFloat("min_gps_speed", minGpsSpeedKnots.toFloat())
+            putFloat("mag_scale_x", scaleX.toFloat()); putFloat("mag_scale_y", scaleY.toFloat()); putFloat("mag_scale_z", scaleZ.toFloat())
+            putFloat("gyro_off_z", gyroOffsetZ.toFloat()); putFloat("gps_heading_offset", gpsHeadingOffset.toFloat()); putFloat("min_gps_speed", minGpsSpeedKnots.toFloat())
             apply()
         }
     }
 
     private fun checkPermissionsAndScan() {
-        val permissions = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
-            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-        }
-
-        val missing = permissions.filter { ActivityCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
-        if (missing.isEmpty()) {
-            openScanActivity()
-            startGpsUpdates()
-        } else requestPermissionLauncher.launch(missing.toTypedArray())
+        val perms = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) { perms.add(Manifest.permission.BLUETOOTH_SCAN); perms.add(Manifest.permission.BLUETOOTH_CONNECT) }
+        val missing = perms.filter { ActivityCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) { openScanActivity(); startGpsUpdates() } else requestPermissionLauncher.launch(missing.toTypedArray())
     }
+
+    private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { p -> if (p.entries.all { it.value }) { openScanActivity(); startGpsUpdates() } }
 
     @SuppressLint("MissingPermission")
-    private fun startGpsUpdates() {
-        locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, locationListener)
-    }
+    private fun startGpsUpdates() { locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, locationListener) }
 
     private val locationListener = object : LocationListener {
-        override fun onLocationChanged(location: Location) {
-            if (location.hasSpeed()) {
-                currentGpsSpeedKnots = location.speed * 1.94384 // m/s to knots
-                if (location.hasBearing()) {
-                    lastGpsHeading = location.bearing.toDouble()
-                    
-                    if (currentSeaState <= 2 && currentGpsSpeedKnots >= minGpsSpeedKnots) {
-                        var currentCompassHeading = Math.toDegrees(kfHeading)
-                        if (currentCompassHeading < 0) currentCompassHeading += 360.0
-                        
-                        var diff = lastGpsHeading - currentCompassHeading
-                        while (diff > 180) diff -= 360
-                        while (diff < -180) diff += 360
-                        
-                        // Slowly move offset (low-pass) to avoid jumps
-                        gpsHeadingOffset = 0.995 * gpsHeadingOffset + 0.005 * diff
-                        saveCalibration()
-                    }
+        override fun onLocationChanged(l: Location) {
+            if (l.hasSpeed() && l.hasBearing()) {
+                currentGpsSpeedKnots = l.speed * 1.94384
+                if (currentSeaState <= 2 && currentGpsSpeedKnots >= minGpsSpeedKnots) {
+                    var ch = (Math.toDegrees(kfHeading) + 360) % 360
+                    var diff = l.bearing - ch
+                    while (diff > 180) diff -= 360; while (diff < -180) diff += 360
+                    gpsHeadingOffset = 0.995 * gpsHeadingOffset + 0.005 * diff
+                    saveCalibration()
                 }
             }
         }
-        override fun onProviderEnabled(provider: String) {}
-        override fun onProviderDisabled(provider: String) {}
-        override fun onStatusChanged(provider: String, status: Int, extras: Bundle?) {}
+        override fun onProviderEnabled(p: String) {}
+        override fun onProviderDisabled(p: String) {}
+        override fun onStatusChanged(p: String, s: Int, e: Bundle?) {}
     }
 
     private fun openScanActivity() { scanLauncher.launch(Intent(this, ScanActivity::class.java)) }
 
     @SuppressLint("MissingPermission")
-    private fun connectToDevice(address: String) {
-        val device = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter.getRemoteDevice(address)
-        binding.txtStatus.text = "Status: Connecting..."
-        bluetoothGatt = device.connectGatt(this, false, gattCallback)
+    private fun connectToDevice(addr: String) {
+        val dev = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter.getRemoteDevice(addr)
+        binding.txtStatus.text = "Status: Connecting..."; bluetoothGatt = dev.connectGatt(this, false, gattCallback)
     }
 
     private fun startMagCalibration() {
-        isCalibratingMag = true
-        minMx = 1e6; maxMx = -1e6; minMy = 1e6; maxMy = -1e6; minMz = 1e6; maxMz = -1e6
-        binding.btnCalibrateMag.text = "STOP MAG CALIBRATION"
-        binding.txtCalibStatus.text = "Rotate in ALL directions (including flipping it!)"
-        binding.txtCalibStatus.visibility = View.VISIBLE
+        isCalibratingMag = true; minMx = 1e6; maxMx = -1e6; minMy = 1e6; maxMy = -1e6; minMz = 1e6; maxMz = -1e6
+        binding.btnCalibrateMag.text = "STOP MAG CAL"; binding.txtCalibStatus.apply { text = "Rotate 3D (FLIP IT OVER!)"; visibility = View.VISIBLE }
     }
 
     private fun stopMagCalibration() {
-        isCalibratingMag = false
-        binding.btnCalibrateMag.text = "Cal Mag"
-        binding.txtCalibStatus.visibility = View.GONE
-        if (maxMx > minMx && maxMy > minMy) {
-            offsetX = (maxMx + minMx) / 2.0; offsetY = (maxMy + minMy) / 2.0
-            if (maxMz > minMz) offsetZ = (maxMz + minMz) / 2.0
-            val avgDeltaX = (maxMx - minMx) / 2.0; val avgDeltaY = (maxMy - minMy) / 2.0
-            val avgDelta = (avgDeltaX + avgDeltaY) / 2.0
-            scaleX = if (avgDeltaX > 1.0) avgDelta / avgDeltaX else 1.0
-            scaleY = if (avgDeltaY > 1.0) avgDelta / avgDeltaY else 1.0
-            saveCalibration()
-            Toast.makeText(this, "Mag Calibration Saved", Toast.LENGTH_SHORT).show()
+        isCalibratingMag = false; binding.btnCalibrateMag.text = "Cal Mag"; binding.txtCalibStatus.visibility = View.GONE
+        if (maxMx > minMx && maxMy > minMy && maxMz > minMz) {
+            offsetX = (maxMx + minMx) / 2.0; offsetY = (maxMy + minMy) / 2.0; offsetZ = (maxMz + minMz) / 2.0
+            val dx = (maxMx - minMx) / 2.0; val dy = (maxMy - minMy) / 2.0; val dz = (maxMz - minMz) / 2.0
+            val avg = (dx + dy + dz) / 3.0
+            scaleX = if (dx > 1.0) avg / dx else 1.0; scaleY = if (dy > 1.0) avg / dy else 1.0; scaleZ = if (dz > 1.0) avg / dz else 1.0
+            saveCalibration(); Toast.makeText(this, "Mag Cal Saved", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun startGyroCalibration() {
-        isCalibratingGyro = true; gyroSumZ = 0.0; gyroCount = 0
-        binding.btnCalibrateGyro.text = "STOP GYRO CALIBRATION"
-        binding.txtCalibStatus.text = "Keep device PERFECTLY STILL..."
-        binding.txtCalibStatus.visibility = View.VISIBLE
+        isCalibratingGyro = true; gyroSumZ = 0.0; gyroCount = 0; binding.txtCalibStatus.visibility = View.VISIBLE
+        gyroCalibTimer = object : CountDownTimer(5000, 1000) {
+            override fun onTick(ms: Long) { binding.txtCalibStatus.text = "Keep Still... ${(ms/1000)+1}" }
+            override fun onFinish() { stopGyroCalibration() }
+        }.start()
     }
 
     private fun stopGyroCalibration() {
-        isCalibratingGyro = false; binding.btnCalibrateGyro.text = "Cal Gyro"; binding.txtCalibStatus.visibility = View.GONE
-        if (gyroCount > 0) {
-            gyroOffsetZ = gyroSumZ / gyroCount
-            saveCalibration()
-            Toast.makeText(this, "Gyro Calibration Saved", Toast.LENGTH_SHORT).show()
-        }
+        isCalibratingGyro = false; gyroCalibTimer?.cancel()
+        binding.btnCalibrateGyro.text = "Cal Gyro"; binding.txtCalibStatus.visibility = View.GONE
+        if (gyroCount > 0) { gyroOffsetZ = gyroSumZ / gyroCount; saveCalibration(); Toast.makeText(this, "Gyro Cal Saved", Toast.LENGTH_SHORT).show() }
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
-        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+        override fun onConnectionStateChange(g: BluetoothGatt, s: Int, n: Int) {
             runOnUiThread {
-                if (newState == BluetoothProfile.STATE_CONNECTED) { 
-                    binding.txtStatus.text = "Status: Connected"
-                    binding.txtStatus.setTextColor(0xFF4CAF50.toInt()) // Green
-                    gatt.discoverServices() 
-                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    binding.txtStatus.text = "Status: Disconnected"
-                    binding.txtStatus.setTextColor(0xFFF44336.toInt()) // Red
-                }
+                if (n == BluetoothProfile.STATE_CONNECTED) { binding.txtStatus.apply { text = "Status: Connected"; setTextColor(0xFF4CAF50.toInt()) }; g.discoverServices() }
+                else if (n == BluetoothProfile.STATE_DISCONNECTED) binding.txtStatus.apply { text = "Status: Disconnected"; setTextColor(0xFFF44336.toInt()) }
             }
         }
-
         @SuppressLint("MissingPermission")
-        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            val service = gatt.getService(SERVICE_UUID)
-            val char = service?.getCharacteristic(CHAR_UUID)
-            if (char != null) {
-                gatt.setCharacteristicNotification(char, true)
-                val descriptor = char.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                gatt.writeDescriptor(descriptor)
-            }
+        override fun onServicesDiscovered(g: BluetoothGatt, s: Int) {
+            val c = g.getService(SERVICE_UUID)?.getCharacteristic(CHAR_UUID)
+            if (c != null) { g.setCharacteristicNotification(c, true); val d = c.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")); d.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE; g.writeDescriptor(d) }
         }
-
-        override fun onCharacteristicChanged(gatt: BluetoothGatt, ch: BluetoothGattCharacteristic) {
+        override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
             val d = ch.value
             if (d.size >= 20 && d[0] == 0xA1.toByte()) {
-                val now = System.currentTimeMillis()
-                val dt = if (lastTimestamp == 0L) 0.02 else (now - lastTimestamp) / 1000.0
-                lastTimestamp = now
-
-                val ax = ((d[3].toInt() shl 8) or (d[2].toInt() and 0xFF)).toShort().toDouble()
-                val ay = ((d[5].toInt() shl 8) or (d[4].toInt() and 0xFF)).toShort().toDouble()
-                val az = ((d[7].toInt() shl 8) or (d[6].toInt() and 0xFF)).toShort().toDouble()
-                val gxRaw = ((d[9].toInt() shl 8) or (d[8].toInt() and 0xFF)).toShort().toDouble()
-                val gyRaw = ((d[11].toInt() shl 8) or (d[10].toInt() and 0xFF)).toShort().toDouble()
+                val now = System.currentTimeMillis(); val dt = if (lastTimestamp == 0L) 0.02 else (now - lastTimestamp) / 1000.0; lastTimestamp = now
+                var axRaw = ((d[3].toInt() shl 8) or (d[2].toInt() and 0xFF)).toShort().toDouble()
+                var ayRaw = ((d[5].toInt() shl 8) or (d[4].toInt() and 0xFF)).toShort().toDouble()
+                val azRaw = ((d[7].toInt() shl 8) or (d[6].toInt() and 0xFF)).toShort().toDouble()
                 val gzRaw = ((d[13].toInt() shl 8) or (d[12].toInt() and 0xFF)).toShort().toDouble()
                 val mxRaw = ((d[15].toInt() shl 8) or (d[14].toInt() and 0xFF)).toShort().toDouble()
                 val myRaw = ((d[17].toInt() shl 8) or (d[16].toInt() and 0xFF)).toShort().toDouble()
                 val mzRaw = ((d[19].toInt() shl 8) or (d[18].toInt() and 0xFF)).toShort().toDouble()
 
-                if (isCalibratingMag) {
-                    minMx = min(minMx, mxRaw); maxMx = max(maxMx, mxRaw)
-                    minMy = min(minMy, myRaw); maxMy = max(maxMy, myRaw)
-                    minMz = min(minMz, mzRaw); maxMz = max(maxMz, mzRaw)
-                }
+                if (isCalibratingMag) { minMx = min(minMx, mxRaw); maxMx = max(maxMx, mxRaw); minMy = min(minMy, myRaw); maxMy = max(maxMy, myRaw); minMz = min(minMz, mzRaw); maxMz = max(maxMz, mzRaw) }
                 if (isCalibratingGyro) { gyroSumZ += gzRaw; gyroCount++ }
 
-                // 1. Apply Calibration
-                val mx = (mxRaw - offsetX) * scaleX
-                val my = (myRaw - offsetY) * scaleY
-                val mz = (mzRaw - offsetZ)
-                val gzDeg = -(gzRaw - gyroOffsetZ) / 64.0 
+                try { val line = "${now},${axRaw},${ayRaw},${azRaw},${gzRaw},${mxRaw},${myRaw},${mzRaw}\n"; FileOutputStream(logFile, true).use { it.write(line.toByteArray()) } } catch (e: Exception) {}
 
-                // 2. Calculate Tilt (Roll/Pitch)
-                val roll = atan2(ay, az)
-                val pitch = atan2(-ax, sqrt(ay * ay + az * az))
+                // 1. Aligned Reference Frame (NED: X-Forward, Y-Right, Z-Down)
+                var ax = axRaw; var ay = ayRaw; var az = azRaw
+                if (ACCT_ROTATED_180) { ax = -ax; ay = -ay } // Align Accel PCB to Mag PCB orientation
+                
+                var mx = (mxRaw - offsetX) * scaleX; var my = (myRaw - offsetY) * scaleY; var mz = (mzRaw - offsetZ) * scaleZ
+                if (INVERT_MAG_Z) mz = -mz // Crucial Fix: Log showed Mag Z inverted vs Accel Z
+                
+                var gzDeg = (gzRaw - gyroOffsetZ) / 64.0; if (INVERT_GYRO_Z) gzDeg = -gzDeg
 
-                // 3. Project Magnetometer to Horizontal Plane
-                val xh = mx * cos(pitch) + my * sin(roll) * sin(pitch) + mz * cos(roll) * sin(pitch)
-                val yh = my * cos(roll) - mz * sin(roll)
-
-                // 4. Calculate Mag Heading
+                // 2. NXP Standard Tilt Compensation
+                val amag = sqrt(ax*ax + ay*ay + az*az)
+                val nax = ax/amag; val nay = ay/amag; val naz = az/amag
+                val phi = atan2(nay, naz) // Roll
+                val theta = atan2(-nax, nay * sin(phi) + naz * cos(phi)) // Pitch
+                
+                val xh = mx * cos(theta) + my * sin(phi) * sin(theta) + mz * cos(phi) * sin(theta)
+                val yh = my * cos(phi) - mz * sin(phi)
                 val magHeading = atan2(yh, xh) 
 
-                // 5. Kalman Fusion
-                kfHeading += Math.toRadians(gzDeg * dt) 
-                kfP += kfQ
+                // 3. Kalman Fusion
+                kfHeading += Math.toRadians(gzDeg * dt); kfP += kfQ
+                var diff = magHeading - kfHeading; while (diff > PI) diff -= 2 * PI; while (diff < -PI) diff += 2 * PI
+                kfHeading += (kfP / (kfP + kfR)) * diff; kfP = (1.0 - (kfP / (kfP + kfR))) * kfP
+                while (kfHeading > PI) kfHeading -= 2 * PI; while (kfHeading < -PI) kfHeading += 2 * PI
 
-                var angleDiff = magHeading - kfHeading
-                while (angleDiff > PI) angleDiff -= 2 * PI
-                while (angleDiff < -PI) angleDiff += 2 * PI
+                // 4. Sea State
+                val motion = abs(amag / 2048.0 - 1.0) + abs(gzDeg / 100.0)
+                motionBuffer.add(motion); if (motionBuffer.size > BUFFER_SIZE) motionBuffer.removeAt(0)
+                val varMotion = motionBuffer.map { (it - motionBuffer.average()).pow(2) }.average()
+                currentSeaState = when { varMotion < 0.0001 -> 1; varMotion < 0.001 -> 2; varMotion < 0.005 -> 3; varMotion < 0.01 -> 4; varMotion < 0.05 -> 5; varMotion < 0.1 -> 6; varMotion < 0.2 -> 7; varMotion < 0.5 -> 8; else -> 9 }
 
-                val kGain = kfP / (kfP + kfR)
-                kfHeading += kGain * angleDiff
-                
-                while (kfHeading > PI) kfHeading -= 2 * PI
-                while (kfHeading < -PI) kfHeading += 2 * PI
-
-                // Sea State calculation (Variance based)
-                val motionMagnitude = sqrt(ax*ax + ay*ay + az*az) / 16384.0 + 
-                                     sqrt(gxRaw*gxRaw + gyRaw*gyRaw + gzRaw*gzRaw) / 32768.0
-                motionBuffer.add(motionMagnitude)
-                if (motionBuffer.size > BUFFER_SIZE) motionBuffer.removeAt(0)
-                
-                val avgMotion = motionBuffer.average()
-                val variance = motionBuffer.map { (it - avgMotion).pow(2) }.average()
-                currentSeaState = when {
-                    variance < 0.0001 -> 1
-                    variance < 0.001 -> 2
-                    variance < 0.005 -> 3
-                    variance < 0.01 -> 4
-                    variance < 0.05 -> 5
-                    variance < 0.1 -> 6
-                    variance < 0.2 -> 7
-                    variance < 0.5 -> 8
-                    else -> 9
-                }
-
-                // 6. Throttled UI Update (every 200ms)
                 if (now - lastUiUpdateTime > 200) {
-                    lastUiUpdateTime = now
-                    var deg = Math.toDegrees(kfHeading)
-                    if (deg < 0) deg += 360.0
-                    
-                    var finalHeading = (deg + gpsHeadingOffset + 360) % 360
-
-                    runOnUiThread {
-                        binding.txtHeading.text = "%.0f°".format(finalHeading)
-                        binding.txtStatus.text = "X:%.0f Y:%.0f Z:%.0f".format(mx, my, mz)
-                        binding.txtSeaState.text = "Sea State: $currentSeaState"
-                        binding.txtGpsInfo.text = "GPS: %.1f kn".format(currentGpsSpeedKnots)
-                        binding.txtGpsOffset.text = "Offset: %.1f°".format(gpsHeadingOffset)
-                    }
+                    lastUiUpdateTime = now; var deg = (Math.toDegrees(kfHeading) + gpsHeadingOffset + 360) % 360
+                    runOnUiThread { binding.txtHeading.text = "%.0f°".format(deg); binding.txtStatus.text = "A:%.0f,%.0f,%.0f | M:%.0f,%.0f,%.0f".format(ax, ay, az, mx, my, mz); binding.txtSeaState.text = "Sea State: $currentSeaState"; binding.txtGpsInfo.text = "GPS: %.1f kn".format(currentGpsSpeedKnots); binding.txtGpsOffset.text = "Offset: %.1f°".format(gpsHeadingOffset) }
                 }
             }
         }

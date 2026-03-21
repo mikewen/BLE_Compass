@@ -1,33 +1,27 @@
-# BLE_Compass (AHRS Version)
+# BLE Compass (High-Precision AHRS)
 
-This project implements a high-performance, tilt-compensated boat compass using BLE to receive sensor data from a QMI8658C (Accel/Gyro) and MMC5603 (Magnetometer).
+A professional-grade boat compass that uses BLE to receive raw 9-axis data from a QMI8658 (Accel/Gyro) and MMC5603 (Magnetometer). 
 
-## Features
-- **BLE Connectivity**: Connects to the sensor node via GATT.
-- **Advanced AHRS Fusion**: Uses a 1D Kalman Filter to fuse high-speed Gyroscope data (50Hz) with Magnetometer readings.
-- **Tilt-Compensation**: Accurately calculates heading even when the boat is pitching or rolling.
-- **Sea State Estimation**: Analyzes motion variance to provide a Sea State value (1-9) based on the Douglas Scale.
-- **GPS Auto-Calibration**: Automatically aligns the magnetic heading with the GPS Course Over Ground (COG) when the boat is moving in a straight line on calm water.
-- **Keep Screen On**: Toggle to prevent the phone from sleeping during navigation.
-- **User-Friendly UI**: High-contrast, large-font display with real-time calibration prompts.
+## 🚀 Key Features
+- **NED Fusion Logic**: Implements industry-standard North-East-Down coordinate system for stable 360° heading.
+- **Kalman Filter**: Fuses 50Hz Gyroscope data with Magnetometer readings to eliminate lag and vibration noise.
+- **High-Precision Tilt Compensation**: Uses a full rotation matrix to project magnetic vectors onto the horizontal plane, keeping the heading accurate during pitch and roll.
+- **GPS Auto-Calibration**: Automatically calculates the magnetic deviation and mounting offset by comparing the compass to the GPS Course Over Ground (COG) when the boat is moving (>2kn) in calm water.
+- **Sea State Monitoring**: Real-time analysis of vessel agitation using variance-based motion detection (1-9 scale).
+- **Raw Data Logger**: Automatically logs sensor data to `.txt` for advanced debugging and post-processing.
 
-## Calibration
-### 1. Manual Magnetometer Calibration
-Click **Cal Mag** and rotate the device in all directions (including flipping it over) to capture the full 3D magnetic field. This removes Hard-Iron and Soft-Iron biases.
+## 🛠 Hardware Alignment
+The code is pre-configured for modules where the Magnetometer is rotated 180° relative to the Accelerometer (standard for many common PCB layouts).
+- `ACCT_ROTATED_180 = true`: Aligns Accel/Gyro to the Mag frame.
+- `INVERT_MAG_Z = true`: Corrects for Z-axis polarity mismatch.
+- `INVERT_GYRO_Z = true`: Aligns Gyro rotation with Clockwise compass heading.
 
-### 2. Manual Gyroscope Calibration
-Click **Cal Gyro** while the device is perfectly still to remove the zero-rate bias.
+## 📐 Calibration Guide
+1. **Cal Mag**: Rotate the device in a figure-8 pattern. **CRITICAL:** You must flip the device completely upside down several times to calibrate the Z-axis. This fixes tilt-up/down errors.
+2. **Cal Gyro**: Keep the device perfectly still for 5 seconds (countdown provided).
+3. **Auto-Cal**: Drive the boat in a straight line on calm water. The app will gradually align the magnetic heading to your True GPS heading.
 
-### 3. GPS Auto-Calibration
-When **Sea State <= 2** and **Boat Speed > 2.0 kn** (configurable), the app will slowly adjust the compass offset to match your GPS track. This accounts for local magnetic deviation and sensor mounting alignment.
-
-## UI Layout
-- **Heading**: Large red number (0-360°).
-- **Sea State**: Green indicator of water agitation.
-- **GPS Info**: Shows current speed and the active GPS-derived offset.
-- **Screen Toggle**: Green (On) / Grey (Off) button for display persistence.
-
-## Project Structure
-- `MainActivity.kt`: Core fusion logic, GPS tracking, and UI management.
-- `ScanActivity.kt`: BLE device discovery.
-- `ic_compass_app.xml`: Custom vector app icon.
+## 📂 Developer Notes
+- **Fusion Frequency**: 50Hz (20ms packets).
+- **UI Refresh**: 5Hz (200ms) for readability.
+- **Data Log**: Found in `/Android/data/com.mikewen.ble_compass/files/raw_sensor_data.txt`.
