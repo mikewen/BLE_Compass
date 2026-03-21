@@ -11,7 +11,7 @@ A professional-grade boat compass that uses BLE to receive raw 9-axis data from 
 - **Raw Data Logger**: Automatically logs sensor data to `.txt` for advanced debugging and post-processing.
 
 ## 🛠 Hardware Alignment
-The code is pre-configured for modules where the Magnetometer is rotated 180° relative to the Accelerometer (standard for many common PCB layouts).
+The code is pre-configured for modules where the Magnetometer is rotated 180° relative to the Accelerometer.
 - `ACCT_ROTATED_180 = true`: Aligns Accel/Gyro to the Mag frame.
 - `INVERT_MAG_Z = true`: Corrects for Z-axis polarity mismatch.
 - `INVERT_GYRO_Z = true`: Aligns Gyro rotation with Clockwise compass heading.

@@ -1,166 +1,286 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="12dp"
     android:background="#F5F5F5">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal">
-        <Button
-            android:id="@+id/btnScan"
-            android:layout_width="0dp"
-            android:layout_height="50dp"
-            android:layout_weight="1"
-            android:text="Scan BLE"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-        <Button
-            android:id="@+id/btnKeepScreenOn"
-            android:layout_width="0dp"
-            android:layout_height="50dp"
-            android:layout_weight="1"
-            android:layout_marginStart="4dp"
-            android:text="Screen: OFF"
-            android:backgroundTint="#607D8B"
-            android:textSize="14sp" />
-    </LinearLayout>
+        android:orientation="vertical"
+        android:padding="12dp">
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="45dp"
-        android:orientation="horizontal"
-        android:layout_marginTop="4dp"
-        android:background="#E0E0E0"
-        android:padding="4dp"
-        android:gravity="center">
-        <TextView
-            android:id="@+id/txtGpsInfo"
-            android:layout_width="0dp"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="GPS: 0.0 kn"
-            android:textSize="14sp"
+            android:orientation="horizontal">
+            <Button
+                android:id="@+id/btnScan"
+                android:layout_width="0dp"
+                android:layout_height="50dp"
+                android:layout_weight="1.2"
+                android:text="Scan BLE"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+            <Button
+                android:id="@+id/btnLogToggle"
+                android:layout_width="0dp"
+                android:layout_height="50dp"
+                android:layout_weight="0.8"
+                android:layout_marginStart="4dp"
+                android:text="Log: OFF"
+                android:backgroundTint="#9E9E9E"
+                android:textSize="12sp" />
+            <Button
+                android:id="@+id/btnKeepScreenOn"
+                android:layout_width="0dp"
+                android:layout_height="50dp"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:text="Screen: OFF"
+                android:backgroundTint="#607D8B"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="70dp"
+            android:orientation="horizontal"
+            android:layout_marginTop="4dp"
+            android:background="#E0E0E0"
+            android:padding="4dp"
+            android:gravity="center">
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center">
+                <TextView
+                    android:id="@+id/txtGpsInfo"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0.0 kn"
+                    android:textColor="#1B5E20"
+                    android:textSize="28sp"
+                    android:textStyle="bold" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="GPS SPEED"
+                    android:textSize="10sp"
+                    android:textColor="#616161" />
+            </LinearLayout>
+            <View
+                android:layout_width="1dp"
+                android:layout_height="match_parent"
+                android:background="#BDBDBD"
+                android:layout_marginVertical="4dp" />
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center">
+                <TextView
+                    android:id="@+id/txtGpsOffset"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0.0°"
+                    android:textColor="#455A64"
+                    android:textSize="22sp"
+                    android:textStyle="bold" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="TRUE OFFSET"
+                    android:textSize="10sp"
+                    android:textColor="#616161" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/layoutFilter"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:visibility="gone">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Filter:"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+            <Spinner
+                android:id="@+id/spinnerFilter"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/txtStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Status: Disconnected"
+            android:textColor="#757575"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/txtHeading"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
             android:gravity="center"
+            android:text="--"
+            android:textColor="#FF0000"
+            android:textSize="100sp"
             android:textStyle="bold" />
+
         <TextView
-            android:id="@+id/txtGpsOffset"
-            android:layout_width="0dp"
+            android:id="@+id/txtRollPitch"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Offset: 0.0°"
-            android:textSize="14sp"
             android:gravity="center"
+            android:text="R: 0.0° P: 0.0°"
+            android:textColor="#616161"
+            android:textSize="24sp"
             android:textStyle="bold" />
-    </LinearLayout>
 
-    <TextView
-        android:id="@+id/txtStatus"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="Status: Disconnected"
-        android:textColor="#757575"
-        android:textSize="14sp"
-        android:textStyle="bold" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:layout_marginTop="4dp">
+            <TextView
+                android:id="@+id/txtSeaState"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Sea: 0"
+                android:textColor="#00796B"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+            <TextView
+                android:id="@+id/txtTarget"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="20dp"
+                android:text="Target: OFF"
+                android:textColor="#1976D2"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+        </LinearLayout>
 
-    <TextView
-        android:id="@+id/txtHeading"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:gravity="center"
-        android:text="--"
-        android:textColor="#FF0000"
-        android:textSize="110sp"
-        android:textStyle="bold" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp">
+            <Button android:id="@+id/btnPidM10" android:layout_width="0dp" android:layout_height="50dp" android:layout_weight="1" android:text="-10" />
+            <Button android:id="@+id/btnPidM1" android:layout_width="0dp" android:layout_height="50dp" android:layout_weight="1" android:text="-1" android:layout_marginStart="4dp" />
+            <Button android:id="@+id/btnPidHold" android:layout_width="0dp" android:layout_height="50dp" android:layout_weight="1.5" android:text="HOLD" android:layout_marginStart="4dp" android:backgroundTint="#4CAF50" />
+            <Button android:id="@+id/btnPidP1" android:layout_width="0dp" android:layout_height="50dp" android:layout_weight="1" android:text="+1" android:layout_marginStart="4dp" />
+            <Button android:id="@+id/btnPidP10" android:layout_width="0dp" android:layout_height="50dp" android:layout_weight="1" android:text="+10" android:layout_marginStart="4dp" />
+        </LinearLayout>
 
-    <TextView
-        android:id="@+id/txtSeaState"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="center"
-        android:text="Sea: -"
-        android:textColor="#00796B"
-        android:textSize="18sp"
-        android:textStyle="bold"
-        android:layout_marginTop="0dp" />
-
-    <View
-        android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:layout_marginTop="12dp"
-        android:layout_marginBottom="12dp"
-        android:background="#E0E0E0" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal">
         <Button
-            android:id="@+id/btnCalibrateMag"
-            android:layout_width="0dp"
+            android:id="@+id/btnPidStop"
+            android:layout_width="match_parent"
             android:layout_height="50dp"
-            android:layout_weight="1"
-            android:text="Cal Mag"
-            android:textSize="14sp" />
-        <Button
-            android:id="@+id/btnCalibrateGyro"
-            android:layout_width="0dp"
-            android:layout_height="50dp"
-            android:layout_weight="1"
-            android:layout_marginStart="4dp"
-            android:text="Cal Gyro"
-            android:textSize="14sp" />
-    </LinearLayout>
+            android:layout_marginTop="4dp"
+            android:text="STOP AUTO"
+            android:backgroundTint="#F44336" />
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="8dp"
-        android:gravity="center_vertical">
-        <TextView
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Auto-Cal Speed:"
-            android:textSize="12sp" />
-        <Spinner
-            android:id="@+id/spinnerMinSpeed"
-            android:layout_width="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="P:" android:textSize="14sp" />
+            <EditText android:id="@+id/editPidP" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:inputType="numberDecimal" android:text="0.80" android:textSize="14sp" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="I:" android:textSize="14sp" android:layout_marginStart="8dp" />
+            <EditText android:id="@+id/editPidI" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:inputType="numberDecimal" android:text="0.020" android:textSize="14sp" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="D:" android:textSize="14sp" android:layout_marginStart="8dp" />
+            <EditText android:id="@+id/editPidD" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:inputType="numberDecimal" android:text="0.50" android:textSize="14sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="4dp" />
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="kn"
-            android:textSize="12sp" />
+            android:orientation="horizontal"
+            android:layout_marginTop="4dp"
+            android:gravity="center_vertical">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Deadband:" android:textSize="14sp" />
+            <Spinner android:id="@+id/spinnerDeadband" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="4dp" />
+            <CheckBox android:id="@+id/cbAutoDeadband" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Auto (Sea)" android:layout_marginStart="8dp" />
+        </LinearLayout>
+
         <View
-            android:layout_width="0dp"
-            android:layout_height="0dp"
-            android:layout_weight="1" />
-        <Button
-            android:id="@+id/btnResetGps"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:text="Reset GPS"
-            android:textSize="10sp" />
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="8dp"
+            android:background="#E0E0E0" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <Button
+                android:id="@+id/btnCalibrateMag"
+                android:layout_width="0dp"
+                android:layout_height="50dp"
+                android:layout_weight="1"
+                android:text="Cal Mag"
+                android:textSize="14sp" />
+            <Button
+                android:id="@+id/btnCalibrateGyro"
+                android:layout_width="0dp"
+                android:layout_height="50dp"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:text="Cal Gyro"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Auto-Cal Spd:"
+                android:textSize="12sp" />
+            <Spinner
+                android:id="@+id/spinnerMinSpeed"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="kn"
+                android:textSize="12sp" />
+            <View
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+            <Button
+                android:id="@+id/btnResetGps"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:text="Reset GPS"
+                android:textSize="10sp" />
+        </LinearLayout>
+
     </LinearLayout>
-
-    <TextView
-        android:id="@+id/txtCalibStatus"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="10dp"
-        android:background="#FFF9C4"
-        android:padding="10dp"
-        android:text="Prompts will appear here..."
-        android:textColor="#F57F17"
-        android:textSize="16sp"
-        android:textStyle="bold"
-        android:visibility="gone" />
-
-</LinearLayout>
+</ScrollView>
