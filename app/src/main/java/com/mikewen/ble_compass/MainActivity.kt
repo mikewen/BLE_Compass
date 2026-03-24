@@ -16,6 +16,7 @@ import android.location.LocationManager
 import android.os.*
 import android.text.Editable
 import android.text.TextWatcher
+import android.util.Log
 import android.view.View
 import android.view.WindowManager
 import android.widget.*
@@ -26,13 +27,16 @@ import androidx.core.app.ActivityCompat
 import com.mikewen.ble_compass.databinding.ActivityMainBinding
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.*
 import kotlin.math.*
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private var bluetoothGatt: BluetoothGatt? = null
+    private var imuGatt: BluetoothGatt? = null
+    private var gpsGatt: BluetoothGatt? = null
     private lateinit var prefs: SharedPreferences
     private lateinit var locationManager: LocationManager
 
@@ -46,6 +50,7 @@ class MainActivity : AppCompatActivity() {
     // ----------------------------------------
 
     private var isConnected = false
+    private var isGpsConnected = false
 
     // Calibration state
     private var minMx = 1e6; private var maxMx = -1e6; private var minMy = 1e6; private var maxMy = -1e6; private var minMz = 1e6; private var maxMz = -1e6
@@ -86,8 +91,19 @@ class MainActivity : AppCompatActivity() {
     private var logFile: File? = null
     private var lastTimestamp = 0L; private var lastUiUpdateTime = 0L
 
-    private val scanLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r -> if (r.resultCode == Activity.RESULT_OK) r.data?.getStringExtra("device_address")?.let { connectToDevice(it) } }
-    private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { p -> if (p.entries.all { it.value }) { openScanActivity(); startGpsUpdates() } }
+    private val scanLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r -> 
+        if (r.resultCode == Activity.RESULT_OK) {
+            val address = r.data?.getStringExtra("device_address")
+            val name = r.data?.getStringExtra("device_name")
+            if (address != null) connectToDevice(address, name)
+        }
+    }
+    private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { p -> 
+        if (p.entries.all { it.value }) { 
+            openScanActivity()
+            startGpsUpdates()
+        } 
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -196,99 +212,192 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkPermissionsAndScan() {
-        val perms = mutableListOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.ACCESS_FINE_LOCATION)
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) perms.retainAll { it == Manifest.permission.ACCESS_FINE_LOCATION }
-        if (perms.all { ActivityCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) { openScanActivity(); startGpsUpdates() }
-        else requestPermissionLauncher.launch(perms.toTypedArray())
+        val perms = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) perms.removeAll { it == Manifest.permission.BLUETOOTH_SCAN || it == Manifest.permission.BLUETOOTH_CONNECT }
+        
+        if (perms.all { ActivityCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) { 
+            openScanActivity()
+            startGpsUpdates()
+        } else {
+            requestPermissionLauncher.launch(perms.toTypedArray())
+        }
     }
 
     private fun openScanActivity() { scanLauncher.launch(Intent(this, ScanActivity::class.java)) }
 
+    @SuppressLint("MissingPermission")
     private fun startGpsUpdates() {
-        try { locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, object : LocationListener {
-            override fun onLocationChanged(l: Location) {
-                if (l.hasSpeed() && l.hasBearing()) {
-                    currentGpsSpeedKnots = l.speed * 1.94384
-                    if (currentSeaState <= 2 && currentGpsSpeedKnots >= minGpsSpeedKnots) {
-                        val magH = (currentHeading + 360) % 360
-                        var diff = l.bearing.toDouble() - magH
-                        while (diff > 180) diff -= 360; while (diff < -180) diff += 360
-                        gpsHeadingOffset = 0.995 * gpsHeadingOffset + 0.005 * diff
-                        saveCalibration()
-                    }
-                }
+        try {
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, phoneLocationListener)
+        } catch (e: SecurityException) {
+            Log.e("GPS", "Permission denied for phone GPS")
+        }
+    }
+
+    private val phoneLocationListener = object : LocationListener {
+        override fun onLocationChanged(l: Location) {
+            if (isGpsConnected) return // BLE GPS takes priority
+            
+            currentGpsSpeedKnots = l.speed * 1.94384
+            
+            if (!isConnected && l.hasBearing()) {
+                currentHeading = l.bearing.toDouble()
+                updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            } else if (isConnected && currentSeaState <= 2 && currentGpsSpeedKnots >= minGpsSpeedKnots && l.hasBearing()) {
+                val magH = (currentHeading + 360) % 360
+                var diff = l.bearing.toDouble() - magH
+                while (diff > 180) diff -= 360; while (diff < -180) diff += 360
+                gpsHeadingOffset = 0.995 * gpsHeadingOffset + 0.005 * diff
+                saveCalibration()
             }
-            override fun onStatusChanged(p: String?, s: Int, e: Bundle?) {}
-            override fun onProviderEnabled(p: String) {}
-            override fun onProviderDisabled(p: String) {}
-        }) } catch (e: SecurityException) {}
+        }
+        override fun onStatusChanged(p: String?, s: Int, e: Bundle?) {}
+        override fun onProviderEnabled(p: String) {}
+        override fun onProviderDisabled(p: String) {}
     }
 
     @SuppressLint("MissingPermission")
-    private fun connectToDevice(address: String) {
+    private fun connectToDevice(address: String, name: String?) {
         val dev = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter.getRemoteDevice(address)
-        bluetoothGatt = dev.connectGatt(this, false, object : BluetoothGattCallback() {
+        val callback = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(g: BluetoothGatt, s: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) { isConnected = true; g.discoverServices() }
-                else if (newState == BluetoothProfile.STATE_DISCONNECTED) { isConnected = false; bluetoothGatt = null; runOnUiThread { binding.btnScan.text = "Connect" } }
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    if (name == "AC6328_GPS") isGpsConnected = true else isConnected = true
+                    g.discoverServices()
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    if (name == "AC6328_GPS") { isGpsConnected = false; gpsGatt = null } 
+                    else { isConnected = false; imuGatt = null }
+                    runOnUiThread { binding.btnScan.text = "Connect" }
+                }
             }
             override fun onServicesDiscovered(g: BluetoothGatt, s: Int) {
                 g.getService(SERVICE_UUID)?.getCharacteristic(CHAR_UUID)?.let {
                     g.setCharacteristicNotification(it, true)
-                    it.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))?.let { d -> d.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE; g.writeDescriptor(d) }
+                    it.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))?.let { d -> 
+                        d.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        g.writeDescriptor(d)
+                    }
                 }
-                runOnUiThread { binding.btnScan.text = "Connected" }
+                runOnUiThread { 
+                    val statusText = mutableListOf<String>()
+                    if (isConnected) statusText.add("Compass")
+                    if (isGpsConnected) statusText.add("GPS")
+                    binding.btnScan.text = if (statusText.isEmpty()) "Connect" else statusText.joinToString("+")
+                }
             }
             override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) { processRawData(c.value) }
-        })
+        }
+        
+        if (name == "AC6328_GPS") {
+            gpsGatt = dev.connectGatt(this, false, callback)
+        } else {
+            imuGatt = dev.connectGatt(this, false, callback)
+        }
     }
 
     private fun processRawData(data: ByteArray) {
-        if (data.size < 20 || data[0] != 0xA1.toByte()) return
+        if (data.size < 17) return
+        val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        val header = data[0].toInt() and 0xFF
         
         val now = System.currentTimeMillis()
-        val dt = if (lastTimestamp == 0L) 0.02 else (now - lastTimestamp) / 1000.0
-        lastTimestamp = now
 
-        val rawAx = ((data[3].toInt() shl 8) or (data[2].toInt() and 0xFF)).toShort().toDouble()
-        val rawAy = ((data[5].toInt() shl 8) or (data[4].toInt() and 0xFF)).toShort().toDouble()
-        val rawAz = ((data[7].toInt() shl 8) or (data[6].toInt() and 0xFF)).toShort().toDouble()
-        val rawGx = ((data[9].toInt() shl 8) or (data[8].toInt() and 0xFF)).toShort().toDouble()
-        val rawGy = ((data[11].toInt() shl 8) or (data[10].toInt() and 0xFF)).toShort().toDouble()
-        val rawGz = ((data[13].toInt() shl 8) or (data[12].toInt() and 0xFF)).toShort().toDouble()
-        val rawMx = ((data[15].toInt() shl 8) or (data[14].toInt() and 0xFF)).toShort().toDouble()
-        val rawMy = ((data[17].toInt() shl 8) or (data[16].toInt() and 0xFF)).toShort().toDouble()
-        val rawMz = ((data[19].toInt() shl 8) or (data[18].toInt() and 0xFF)).toShort().toDouble()
+        when (header) {
+            0xA1 -> {
+                if (data.size < 20) return
+                val dt = if (lastTimestamp == 0L) 0.02 else (now - lastTimestamp) / 1000.0
+                lastTimestamp = now
 
-        if (isCalibratingMag) { minMx = min(minMx, rawMx); maxMx = max(maxMx, rawMx); minMy = min(minMy, rawMy); maxMy = max(maxMy, rawMy); minMz = min(minMz, rawMz); maxMz = max(maxMz, rawMz) }
-        if (isCalibratingGyro) { gyroSumX += rawGx; gyroSumY += rawGy; gyroSumZ += rawGz; gyroCount++ }
+                val rawAx = buffer.getShort(2).toDouble()
+                val rawAy = buffer.getShort(4).toDouble()
+                val rawAz = buffer.getShort(6).toDouble()
+                val rawGx = buffer.getShort(8).toDouble()
+                val rawGy = buffer.getShort(10).toDouble()
+                val rawGz = buffer.getShort(12).toDouble()
+                val rawMx = buffer.getShort(14).toDouble()
+                val rawMy = buffer.getShort(16).toDouble()
+                val rawMz = buffer.getShort(18).toDouble()
 
-        var ax = rawAx; var ay = rawAy; var az = rawAz
-        if (ACCT_ROTATED_180) { ax = -ax; ay = -ay }
-        var mx = (rawMx - offsetX) * scaleX; var my = (rawMy - offsetY) * scaleY; var mz = (rawMz - offsetZ) * scaleZ
-        if (INVERT_MAG_Z) mz = -mz
-        var gxDeg = (rawGx - gyroOffX) / 64.0; var gyDeg = (rawGy - gyroOffY) / 64.0; var gzDeg = (rawGz - gyroOffZ) / 64.0
-        if (ACCT_ROTATED_180) { gxDeg = -gxDeg; gyDeg = -gyDeg }
-        if (INVERT_GYRO_Z) gzDeg = -gzDeg
+                if (isCalibratingMag) { minMx = min(minMx, rawMx); maxMx = max(maxMx, rawMx); minMy = min(minMy, rawMy); maxMy = max(maxMy, rawMy); minMz = min(minMz, rawMz); maxMz = max(maxMz, rawMz) }
+                if (isCalibratingGyro) { gyroSumX += rawGx; gyroSumY += rawGy; gyroSumZ += rawGz; gyroCount++ }
 
-        // Kalman Filter update
-        currentHeading = runKalman(ax, ay, az, gzDeg, mx, my, mz, dt)
+                var ax = rawAx; var ay = rawAy; var az = rawAz
+                if (ACCT_ROTATED_180) { ax = -ax; ay = -ay }
+                var mx = (rawMx - offsetX) * scaleX; var my = (rawMy - offsetY) * scaleY; var mz = (rawMz - offsetZ) * scaleZ
+                if (INVERT_MAG_Z) mz = -mz
+                var gxDeg = (rawGx - gyroOffX) / 64.0; var gyDeg = (rawGy - gyroOffY) / 64.0; var gzDeg = (rawGz - gyroOffZ) / 64.0
+                if (ACCT_ROTATED_180) { gxDeg = -gxDeg; gyDeg = -gyDeg }
+                if (INVERT_GYRO_Z) gzDeg = -gzDeg
 
-        val amag = sqrt(ax*ax + ay*ay + az*az)
-        var rollDeg = 0.0; var pitchDeg = 0.0
-        if (amag > 0) {
-            val phi = atan2(ay, az); val theta = atan2(-ax, ay * sin(phi) + az * cos(phi))
-            rollDeg = Math.toDegrees(phi); pitchDeg = Math.toDegrees(theta)
+                currentHeading = runKalman(ax, ay, az, gzDeg, mx, my, mz, dt)
+
+                val amag = sqrt(ax*ax + ay*ay + az*az)
+                var rollDeg = 0.0; var pitchDeg = 0.0
+                if (amag > 0) {
+                    val phi = atan2(ay, az); val theta = atan2(-ax, ay * sin(phi) + az * cos(phi))
+                    rollDeg = Math.toDegrees(phi); pitchDeg = Math.toDegrees(theta)
+                }
+
+                val motion = abs(amag / 2048.0 - 1.0) + abs(gzDeg / 100.0)
+                motionBuffer.add(motion); if (motionBuffer.size > BUFFER_SIZE) motionBuffer.removeAt(0)
+                val varMotion = if (motionBuffer.size < 5) 0.0 else motionBuffer.map { (it - motionBuffer.average()).pow(2) }.average()
+                currentSeaState = when { varMotion < 0.0001 -> 1; varMotion < 0.001 -> 2; varMotion < 0.005 -> 3; varMotion < 0.01 -> 4; varMotion < 0.05 -> 5; varMotion < 0.1 -> 6; varMotion < 0.2 -> 7; varMotion < 0.5 -> 8; else -> 9 }
+
+                if (now - lastUiUpdateTime > 200) { updateUi(ax, ay, az, mx, my, mz, rollDeg, pitchDeg); lastUiUpdateTime = now }
+                if (isLogging) { val logLine = "$now,$rawAx,$rawAy,$rawAz,$rawGx,$rawGy,$rawGz,$rawMx,$rawMy,$rawMz,$currentHeading\n"
+                    try { FileOutputStream(logFile, true).use { it.write(logLine.toByteArray()) } } catch (e: Exception) {} }
+            }
+            0xA2 -> {
+                // GPS Orientation (PQTMTAR)
+                val quality = data[5].toInt() and 0xFF
+                val pitch = buffer.getShort(8) / 100.0f
+                val roll = buffer.getShort(10) / 100.0f
+                val heading = (buffer.getShort(12).toInt() and 0xFFFF) / 100.0f
+                val usedSV = data[16].toInt() and 0xFF
+                //Log.d("GPS_ORI", "Q:$quality Head:$heading Pitch: $pitch Roll: $roll")
+                Log.d("GPS_ORI", "Q:$quality Head:$heading Pitch:$pitch Roll:$roll SV:$usedSV")
+
+                if (!isConnected) {
+                    currentHeading = heading.toDouble()
+                    updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, roll.toDouble(), pitch.toDouble())
+                }
+            }
+            0xA3 -> {
+                // GPS Position (GNRMC)
+                //val timeMs = buffer.getInt(1).toLong() and 0xFFFFFFFFL
+                val rawLat = buffer.getInt(5) / 10000.0f
+                val rawLon = buffer.getInt(9) / 10000.0f
+                val lat = convertNmeaToDecimal(rawLat)
+                val lon = convertNmeaToDecimal(rawLon)
+                val speedKnots = (buffer.getShort(13).toInt() and 0xFFFF) / 100.0f
+                val course = (buffer.getShort(15).toInt() and 0xFFFF) / 100.0f
+
+                Log.d("GPS_POS", "Lat: $lat Lon: $lon Speed: $speedKnots Course: $course")
+                
+                currentGpsSpeedKnots = speedKnots.toDouble()
+                
+                if (!isConnected) {
+                    currentHeading = course.toDouble()
+                    updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) 
+                }
+
+                if (isConnected && currentSeaState <= 2 && currentGpsSpeedKnots >= minGpsSpeedKnots) {
+                    val magH = (currentHeading + 360) % 360
+                    var diff = course.toDouble() - magH
+                    while (diff > 180) diff -= 360; while (diff < -180) diff += 360
+                    gpsHeadingOffset = 0.995 * gpsHeadingOffset + 0.005 * diff
+                    saveCalibration()
+                }
+            }
         }
+    }
 
-        val motion = abs(amag / 2048.0 - 1.0) + abs(gzDeg / 100.0)
-        motionBuffer.add(motion); if (motionBuffer.size > BUFFER_SIZE) motionBuffer.removeAt(0)
-        val varMotion = if (motionBuffer.size < 5) 0.0 else motionBuffer.map { (it - motionBuffer.average()).pow(2) }.average()
-        currentSeaState = when { varMotion < 0.0001 -> 1; varMotion < 0.001 -> 2; varMotion < 0.005 -> 3; varMotion < 0.01 -> 4; varMotion < 0.05 -> 5; varMotion < 0.1 -> 6; varMotion < 0.2 -> 7; varMotion < 0.5 -> 8; else -> 9 }
-
-        if (now - lastUiUpdateTime > 200) { updateUi(ax, ay, az, mx, my, mz, rollDeg, pitchDeg); lastUiUpdateTime = now }
-        if (isLogging) { val logLine = "$now,$rawAx,$rawAy,$rawAz,$rawGx,$rawGy,$rawGz,$rawMx,$rawMy,$rawMz,$currentHeading\n"
-            try { FileOutputStream(logFile, true).use { it.write(logLine.toByteArray()) } } catch (e: Exception) {} }
+    private fun convertNmeaToDecimal(nmea: Float): Double {
+        val absNmea = Math.abs(nmea)
+        val degrees = (absNmea / 100).toInt()
+        val minutes = absNmea - (degrees * 100)
+        val decimal = degrees + (minutes / 60.0)
+        return if (nmea < 0) -decimal else decimal
     }
 
     private fun runKalman(ax: Double, ay: Double, az: Double, gz: Double, mx: Double, my: Double, mz: Double, dt: Double): Double {
@@ -349,6 +458,8 @@ class MainActivity : AppCompatActivity() {
             binding.txtSeaState.text = "Sea: $currentSeaState"
             binding.txtGpsInfo.text = "%.1f kn".format(currentGpsSpeedKnots)
             binding.txtGpsOffset.text = "%.1f°".format(gpsHeadingOffset)
+            
+            // Display Roll/Pitch with color logic
             binding.txtRollPitch.text = "R: %.1f° P: %.1f°".format(roll, pitch)
             if (abs(pitch) > 5.0 || abs(roll) > 15.0) binding.txtRollPitch.setTextColor(Color.RED) else binding.txtRollPitch.setTextColor(0xFF616161.toInt())
             updatePidUi()
