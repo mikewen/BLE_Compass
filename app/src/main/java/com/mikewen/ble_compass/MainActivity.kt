@@ -51,6 +51,7 @@ class MainActivity : AppCompatActivity() {
 
     private var isConnected = false
     private var isGpsConnected = false
+    private var displayMode = 0 // 0: IMU, 1: GPS
 
     // Calibration state
     private var minMx = 1e6; private var maxMx = -1e6; private var minMy = 1e6; private var maxMy = -1e6; private var minMz = 1e6; private var maxMz = -1e6
@@ -120,6 +121,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnResetGps.setOnClickListener { gpsHeadingOffset = 0.0; saveCalibration(); Toast.makeText(this, "GPS Reset", Toast.LENGTH_SHORT).show() }
         binding.btnKeepScreenOn.setOnClickListener { toggleKeepScreenOn() }
         binding.btnLogToggle.setOnClickListener { toggleLogging() }
+        binding.btnToggleDisplay.setOnClickListener { toggleDisplayMode() }
 
         binding.btnPidHold.setOnClickListener { setTarget((currentHeading + gpsHeadingOffset + 360) % 360) }
         binding.btnPidM10.setOnClickListener { adjustTarget(-10.0) }
@@ -137,6 +139,26 @@ class MainActivity : AppCompatActivity() {
         super.onStart()
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             startGpsUpdates()
+        }
+    }
+
+    private fun toggleDisplayMode() {
+        displayMode = if (displayMode == 0) 1 else 0
+        binding.btnToggleDisplay.text = if (displayMode == 0) "IMU" else "GPS"
+        resetDisplay()
+    }
+
+    private fun resetDisplay() {
+        runOnUiThread {
+            binding.txtHeading.text = "--"
+            binding.txtRollPitch.text = "R: 0.0° P: 0.0°"
+            binding.txtRollPitch.setTextColor(0xFF616161.toInt())
+            binding.txtGpsInfo.text = "0.0 kn"
+            binding.txtGpsOffset.text = "0.0°"
+            binding.txtSeaState.text = "Sea: 0"
+            if (!isConnected && !isGpsConnected) {
+                binding.txtStatus.text = "Status: Disconnected"
+            }
         }
     }
 
@@ -237,10 +259,8 @@ class MainActivity : AppCompatActivity() {
     private val phoneLocationListener = object : LocationListener {
         override fun onLocationChanged(l: Location) {
             if (isGpsConnected) return // BLE GPS takes priority
-            
             currentGpsSpeedKnots = l.speed * 1.94384
-            
-            if (!isConnected && l.hasBearing()) {
+            if (!isConnected && l.hasBearing() && displayMode == 1) {
                 currentHeading = l.bearing.toDouble()
                 updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             } else if (isConnected && currentSeaState <= 2 && currentGpsSpeedKnots >= minGpsSpeedKnots && l.hasBearing()) {
@@ -261,13 +281,34 @@ class MainActivity : AppCompatActivity() {
         val dev = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter.getRemoteDevice(address)
         val callback = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(g: BluetoothGatt, s: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    if (name == "AC6328_GPS") isGpsConnected = true else isConnected = true
-                    g.discoverServices()
-                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    if (name == "AC6328_GPS") { isGpsConnected = false; gpsGatt = null } 
-                    else { isConnected = false; imuGatt = null }
-                    runOnUiThread { binding.btnScan.text = "Connect" }
+                runOnUiThread {
+                    if (newState == BluetoothProfile.STATE_CONNECTED) {
+                        if (name == "AC6328_GPS") {
+                            isGpsConnected = true
+                            if (!isConnected) displayMode = 1 // Switch to GPS if IMU not connected
+                        } else {
+                            isConnected = true
+                            if (!isGpsConnected) displayMode = 0 // Switch to IMU if GPS not connected
+                        }
+                        g.discoverServices()
+                    } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                        if (name == "AC6328_GPS") {
+                            isGpsConnected = false; gpsGatt = null
+                            if (displayMode == 1 && isConnected) displayMode = 0 // Fallback to IMU
+                        } else {
+                            isConnected = false; imuGatt = null
+                            if (displayMode == 0 && isGpsConnected) displayMode = 1 // Fallback to GPS
+                        }
+                        
+                        if (!isConnected && !isGpsConnected) {
+                            resetDisplay()
+                            binding.btnScan.text = "Connect"
+                            binding.txtStatus.text = "Status: Disconnected"
+                        } else {
+                            updateStatusText()
+                        }
+                    }
+                    binding.btnToggleDisplay.text = if (displayMode == 0) "IMU" else "GPS"
                 }
             }
             override fun onServicesDiscovered(g: BluetoothGatt, s: Int) {
@@ -278,12 +319,7 @@ class MainActivity : AppCompatActivity() {
                         g.writeDescriptor(d)
                     }
                 }
-                runOnUiThread { 
-                    val statusText = mutableListOf<String>()
-                    if (isConnected) statusText.add("Compass")
-                    if (isGpsConnected) statusText.add("GPS")
-                    binding.btnScan.text = if (statusText.isEmpty()) "Connect" else statusText.joinToString("+")
-                }
+                runOnUiThread { updateStatusText() }
             }
             override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) { processRawData(c.value) }
         }
@@ -293,6 +329,14 @@ class MainActivity : AppCompatActivity() {
         } else {
             imuGatt = dev.connectGatt(this, false, callback)
         }
+    }
+
+    private fun updateStatusText() {
+        val statusText = mutableListOf<String>()
+        if (isConnected) statusText.add("IMU")
+        if (isGpsConnected) statusText.add("GPS")
+        binding.btnScan.text = if (statusText.isEmpty()) "Connect" else statusText.joinToString("+")
+        binding.txtStatus.text = "Status: Connected (" + statusText.joinToString(", ") + ")"
     }
 
     private fun processRawData(data: ByteArray) {
@@ -343,28 +387,42 @@ class MainActivity : AppCompatActivity() {
                 val varMotion = if (motionBuffer.size < 5) 0.0 else motionBuffer.map { (it - motionBuffer.average()).pow(2) }.average()
                 currentSeaState = when { varMotion < 0.0001 -> 1; varMotion < 0.001 -> 2; varMotion < 0.005 -> 3; varMotion < 0.01 -> 4; varMotion < 0.05 -> 5; varMotion < 0.1 -> 6; varMotion < 0.2 -> 7; varMotion < 0.5 -> 8; else -> 9 }
 
-                if (now - lastUiUpdateTime > 200) { updateUi(ax, ay, az, mx, my, mz, rollDeg, pitchDeg); lastUiUpdateTime = now }
+                if (displayMode == 0) {
+                    if (now - lastUiUpdateTime > 200) { 
+                        updateUi(ax, ay, az, mx, my, mz, rollDeg, pitchDeg)
+                        lastUiUpdateTime = now 
+                    }
+                    runOnUiThread {
+                        binding.txtRawData.text = "IMU A:%.0f,%.0f,%.0f G:%.1f,%.1f,%.1f M:%.0f,%.0f,%.0f".format(ax, ay, az, gxDeg, gyDeg, gzDeg, mx, my, mz)
+                    }
+                }
+                
                 if (isLogging) { val logLine = "$now,$rawAx,$rawAy,$rawAz,$rawGx,$rawGy,$rawGz,$rawMx,$rawMy,$rawMz,$currentHeading\n"
                     try { FileOutputStream(logFile, true).use { it.write(logLine.toByteArray()) } } catch (e: Exception) {} }
             }
             0xA2 -> {
                 // GPS Orientation (PQTMTAR)
+                val timeMs = buffer.getInt(1).toLong() and 0xFFFFFFFFL
                 val quality = data[5].toInt() and 0xFF
                 val pitch = buffer.getShort(8) / 100.0f
                 val roll = buffer.getShort(10) / 100.0f
                 val heading = (buffer.getShort(12).toInt() and 0xFFFF) / 100.0f
+                val accHead = (buffer.getShort(14).toInt() and 0xFFFF) / 1000.0f
                 val usedSV = data[16].toInt() and 0xFF
-                //Log.d("GPS_ORI", "Q:$quality Head:$heading Pitch: $pitch Roll: $roll")
-                Log.d("GPS_ORI", "Q:$quality Head:$heading Pitch:$pitch Roll:$roll SV:$usedSV")
 
-                if (!isConnected) {
+                Log.d("GPS_ORI", "T:$timeMs Q:$quality H:$heading accH:$accHead P:$pitch R:$roll SV:$usedSV")
+                
+                if (displayMode == 1) {
                     currentHeading = heading.toDouble()
                     updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, roll.toDouble(), pitch.toDouble())
+                    runOnUiThread {
+                        binding.txtRawData.text = "GPS ORI T:$timeMs Q:$quality H:$heading accH:$accHead P:$pitch R:$roll SV:$usedSV"
+                    }
                 }
             }
             0xA3 -> {
                 // GPS Position (GNRMC)
-                //val timeMs = buffer.getInt(1).toLong() and 0xFFFFFFFFL
+                val timeMs = buffer.getInt(1).toLong() and 0xFFFFFFFFL
                 val rawLat = buffer.getInt(5) / 10000.0f
                 val rawLon = buffer.getInt(9) / 10000.0f
                 val lat = convertNmeaToDecimal(rawLat)
@@ -376,9 +434,15 @@ class MainActivity : AppCompatActivity() {
                 
                 currentGpsSpeedKnots = speedKnots.toDouble()
                 
-                if (!isConnected) {
+                if (displayMode == 1 && !isConnected && !isGpsConnected) { 
                     currentHeading = course.toDouble()
                     updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) 
+                }
+                
+                if (displayMode == 1) {
+                    runOnUiThread {
+                        binding.txtRawData.text = "GPS POS T:$timeMs Lat:%.6f Lon:%.6f Spd:%.1f Crs:%.1f".format(lat, lon, speedKnots, course)
+                    }
                 }
 
                 if (isConnected && currentSeaState <= 2 && currentGpsSpeedKnots >= minGpsSpeedKnots) {
@@ -446,7 +510,8 @@ class MainActivity : AppCompatActivity() {
         val activeDb = if (isAutoDeadband) max(3.0, currentSeaState.toDouble()) else deadband
         if (abs(error) < activeDb) { pidIntegral = 0.0; return }
         pidIntegral = (pidIntegral + error * dt).coerceIn(-500.0, 500.0)
-        val output = pidKp * error + pidKi * pidIntegral + pidKd * ((error - pidLastError) / dt)
+        val deriv = (error - pidLastError) / dt
+        val output = pidKp * error + pidKi * pidIntegral + pidKd * deriv
         pidLastError = error
     }
 

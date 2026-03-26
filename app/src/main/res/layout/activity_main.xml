@@ -18,19 +18,31 @@
                 android:id="@+id/btnScan"
                 android:layout_width="0dp"
                 android:layout_height="50dp"
-                android:layout_weight="1.2"
-                android:text="Scan BLE"
-                android:textSize="14sp"
-                android:textStyle="bold" />
+                android:layout_weight="1"
+                android:text="Scan"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:padding="0dp" />
+            <Button
+                android:id="@+id/btnToggleDisplay"
+                android:layout_width="0dp"
+                android:layout_height="50dp"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:text="IMU"
+                android:backgroundTint="#FF9800"
+                android:textSize="10sp"
+                android:padding="0dp" />
             <Button
                 android:id="@+id/btnLogToggle"
                 android:layout_width="0dp"
                 android:layout_height="50dp"
-                android:layout_weight="0.8"
+                android:layout_weight="1"
                 android:layout_marginStart="4dp"
                 android:text="Log: OFF"
                 android:backgroundTint="#9E9E9E"
-                android:textSize="12sp" />
+                android:textSize="10sp"
+                android:padding="0dp" />
             <Button
                 android:id="@+id/btnKeepScreenOn"
                 android:layout_width="0dp"
@@ -39,7 +51,8 @@
                 android:layout_marginStart="4dp"
                 android:text="Screen: OFF"
                 android:backgroundTint="#607D8B"
-                android:textSize="12sp" />
+                android:textSize="10sp"
+                android:padding="0dp" />
         </LinearLayout>
 
         <LinearLayout
@@ -281,6 +294,18 @@
                 android:text="Reset GPS"
                 android:textSize="10sp" />
         </LinearLayout>
+
+        <TextView
+            android:id="@+id/txtRawData"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="#000000"
+            android:fontFamily="monospace"
+            android:padding="8dp"
+            android:text="Raw: --"
+            android:textColor="#00FF00"
+            android:textSize="10sp" />
 
     </LinearLayout>
 </ScrollView>

@@ -1,27 +1,31 @@
-# BLE Compass (High-Precision AHRS)
+# BLE Navigation Hub (Precision IMU + GPS)
 
-A professional-grade boat compass that uses BLE to receive raw 9-axis data from a QMI8658 (Accel/Gyro) and MMC5603 (Magnetometer). 
+A high-performance Android application designed for marine navigation, fusing 9-axis IMU data with high-precision BLE GPS orientation and position data.
 
 ## 🚀 Key Features
-- **NED Fusion Logic**: Implements industry-standard North-East-Down coordinate system for stable 360° heading.
-- **Kalman Filter**: Fuses 50Hz Gyroscope data with Magnetometer readings to eliminate lag and vibration noise.
-- **High-Precision Tilt Compensation**: Uses a full rotation matrix to project magnetic vectors onto the horizontal plane, keeping the heading accurate during pitch and roll.
-- **GPS Auto-Calibration**: Automatically calculates the magnetic deviation and mounting offset by comparing the compass to the GPS Course Over Ground (COG) when the boat is moving (>2kn) in calm water.
-- **Sea State Monitoring**: Real-time analysis of vessel agitation using variance-based motion detection (1-9 scale).
-- **Raw Data Logger**: Automatically logs sensor data to `.txt` for advanced debugging and post-processing.
+- **Dual BLE Connectivity**: Simultaneously connect to a QMI8658+MMC5603 IMU module and an 'AC6328_GPS' sensor.
+- **Smart Switching**: 
+    - Priority-based display: Uses IMU Kalman fusion by default.
+    - Automatic fallback: Switches to BLE GPS orientation or course data if the IMU disconnects.
+    - Phone GPS fallback: Automatically uses internal phone GPS if BLE GPS is unavailable.
+- **Kalman Filter (1D)**: Fuses Gyroscope and Magnetometer data to provide a lag-free, vibration-resistant 360° heading.
+- **NXP Standard Tilt Compensation**: Integrated within the Kalman filter to maintain heading accuracy during significant vessel pitch and roll.
+- **Orientation Warnings**: Real-time Pitch and Roll monitoring with a Red-text visual warning if Pitch > 5° or Roll > 15°.
+- **Autopilot PID Controller**: Integrated PID loop for heading maintenance with boat-optimized sea-state deadbanding.
+- **Live Raw Data Monitoring**: A dedicated debug field at the bottom shows real-time parsed packets from the active sensor.
 
-## 🛠 Hardware Alignment
-The code is pre-configured for modules where the Magnetometer is rotated 180° relative to the Accelerometer.
-- `ACCT_ROTATED_180 = true`: Aligns Accel/Gyro to the Mag frame.
-- `INVERT_MAG_Z = true`: Corrects for Z-axis polarity mismatch.
-- `INVERT_GYRO_Z = true`: Aligns Gyro rotation with Clockwise compass heading.
+## 🛠 Sensor Packet Specification
+The app expects the following packet structures over BLE notifications:
+- **0xA1 (IMU)**: 20 bytes - Accel[X,Y,Z], Gyro[X,Y,Z], Mag[X,Y,Z] (Little Endian).
+- **0xA2 (GPS ORI)**: 17 bytes - Time, Pitch, Roll, Heading, Accuracy (Little Endian).
+- **0xA3 (GPS POS)**: 17 bytes - Time, Latitude, Longitude, Speed, Course (Little Endian).
 
-## 📐 Calibration Guide
-1. **Cal Mag**: Rotate the device in a figure-8 pattern. **CRITICAL:** You must flip the device completely upside down several times to calibrate the Z-axis. This fixes tilt-up/down errors.
-2. **Cal Gyro**: Keep the device perfectly still for 5 seconds (countdown provided).
-3. **Auto-Cal**: Drive the boat in a straight line on calm water. The app will gradually align the magnetic heading to your True GPS heading.
+## 📐 Calibration
+1. **Cal Mag**: Rotate the device in a figure-8 pattern, ensuring several 360° flips to calibrate the Z-axis.
+2. **Cal Gyro**: Keep the device perfectly still for 5 seconds to eliminate bias.
+3. **True Heading Sync**: The app automatically aligns the IMU mounting offset by comparing it to GPS Course Over Ground (COG) when moving > 2kn.
 
 ## 📂 Developer Notes
-- **Fusion Frequency**: 50Hz (20ms packets).
-- **UI Refresh**: 5Hz (200ms) for readability.
-- **Data Log**: Found in `/Android/data/com.mikewen.ble_compass/files/raw_sensor_data.txt`.
+- **Fusion Rate**: 50Hz (20ms packets).
+- **UI Refresh**: 5Hz (200ms).
+- **Coordinate System**: NED (North-East-Down).
