@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:fitsSystemWindows="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="4dp"
+        android:background="#F5F5F5">
+
+        <!-- Header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <Button
+                android:id="@+id/btnBack"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Back"/>
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1"/>
+
+            <RadioGroup
+                android:id="@+id/rgMotorMode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/rbEsc"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="ESC"
+                    android:checked="true"/>
+
+                <RadioButton
+                    android:id="@+id/rbBldc"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="BLDC"/>
+            </RadioGroup>
+        </LinearLayout>
+
+        <!-- Heading -->
+        <TextView
+            android:id="@+id/txtHeading"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="0°"
+            android:textSize="80sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:textColor="#FF0000"/>
+
+        <!-- Speed -->
+        <TextView
+            android:id="@+id/txtSpeed"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="0.0 kn"
+            android:textSize="40sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:textColor="#1B5E20"/>
+        <TextView
+            android:id="@+id/txtRollPitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="R: 0.0° P: 0.0°"
+            android:textSize="22sp"
+            android:gravity="center"
+            android:textColor="#616161"
+            android:layout_marginBottom="4dp"/>
+
+        <!-- Main Controls -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center">
+
+            <!-- PORT -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:padding="8dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="PORT"
+                    android:textSize="22sp"
+                    android:textStyle="bold"/>
+
+                <TextView
+                    android:id="@+id/txtPortVal"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="500"
+                    android:textSize="26sp"
+                    android:textStyle="bold"/>
+
+                <Button android:id="@+id/btnPortPP" android:layout_width="90dp" android:layout_height="80dp" android:text="++"/>
+                <Button android:id="@+id/btnPortP"  android:layout_width="90dp" android:layout_height="80dp" android:text="+"/>
+                <Button android:id="@+id/btnPortM"  android:layout_width="90dp" android:layout_height="80dp" android:text="-"/>
+                <Button android:id="@+id/btnPortMM" android:layout_width="90dp" android:layout_height="80dp" android:text="--"/>
+            </LinearLayout>
+
+            <!-- CENTER (NEW) -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:padding="12dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="BOTH"
+                    android:textSize="22sp"
+                    android:textStyle="bold"/>
+
+                <Button android:id="@+id/btnBothPP" android:layout_width="90dp" android:layout_height="80dp" android:text="++"/>
+                <Button android:id="@+id/btnBothP"  android:layout_width="90dp" android:layout_height="80dp" android:text="+"/>
+                <Button android:id="@+id/btnBothM"  android:layout_width="90dp" android:layout_height="80dp" android:text="-"/>
+                <Button android:id="@+id/btnBothMM" android:layout_width="90dp" android:layout_height="80dp" android:text="--"/>
+            </LinearLayout>
+
+            <!-- STBD -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:padding="8dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="STBD"
+                    android:textSize="22sp"
+                    android:textStyle="bold"/>
+
+                <TextView
+                    android:id="@+id/txtStarboardVal"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="500"
+                    android:textSize="26sp"
+                    android:textStyle="bold"/>
+
+                <Button android:id="@+id/btnStbdPP" android:layout_width="90dp" android:layout_height="80dp" android:text="++"/>
+                <Button android:id="@+id/btnStbdP"  android:layout_width="90dp" android:layout_height="80dp" android:text="+"/>
+                <Button android:id="@+id/btnStbdM"  android:layout_width="90dp" android:layout_height="80dp" android:text="-"/>
+                <Button android:id="@+id/btnStbdMM" android:layout_width="90dp" android:layout_height="80dp" android:text="--"/>
+            </LinearLayout>
+
+        </LinearLayout>
+
+        <!-- STOP -->
+        <Button
+            android:id="@+id/btnStop"
+            android:layout_width="match_parent"
+            android:layout_height="80dp"
+            android:text="STOP"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:backgroundTint="#D32F2F"
+            android:textColor="#FFFFFF"/>
+
+    </LinearLayout>
+</ScrollView>

@@ -40,9 +40,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: SharedPreferences
     private lateinit var locationManager: LocationManager
 
-    private val SERVICE_UUID = UUID.fromString("0000ae30-0000-1000-8000-00805f9b34fb")
-    private val CHAR_UUID = UUID.fromString("0000ae02-0000-1000-8000-00805f9b34fb")
-
     // --- Hardware Alignment Configuration ---
     private val ACCT_ROTATED_180 = true  // Aligns IMU to Mag PCB orientation
     private var INVERT_MAG_Z = true      // Set true if Pitch Up behaves opposite to Pitch Down
@@ -92,6 +89,40 @@ class MainActivity : AppCompatActivity() {
     private var logFile: File? = null
     private var lastTimestamp = 0L; private var lastUiUpdateTime = 0L
 
+    companion object {
+        val SERVICE_AE30 = UUID.fromString("0000ae30-0000-1000-8000-00805f9b34fb")
+        val SERVICE_AE00 = UUID.fromString("0000ae00-0000-1000-8000-00805f9b34fb")
+        val CHAR_DATA = UUID.fromString("0000ae02-0000-1000-8000-00805f9b34fb")
+        val CHAR_MOTOR = UUID.fromString("0000ae03-0000-1000-8000-00805f9b34fb")
+
+        var imuGattInstance: BluetoothGatt? = null
+        var activeServiceUuid: UUID? = null
+        var latestHeading = 0.0
+        var latestSpeed = 0.0
+        var latestRoll = 0.0
+        var latestPitch = 0.0
+        var motorMode = 0 // 0: ESC, 1: BLDC
+
+        @SuppressLint("MissingPermission")
+        fun sendMotorCommand(gatt: BluetoothGatt?, cmd: Int, port: Int, stbd: Int) {
+            val deviceGatt = gatt ?: imuGattInstance ?: return
+            val serviceUuid = activeServiceUuid ?: return
+            val service = deviceGatt.getService(serviceUuid) ?: return
+            val characteristic = service.getCharacteristic(CHAR_MOTOR) ?: return
+            
+            val data = ByteArray(5)
+            data[0] = cmd.toByte()
+            data[1] = (port and 0xFF).toByte()
+            data[2] = ((port shr 8) and 0xFF).toByte()
+            data[3] = (stbd and 0xFF).toByte()
+            data[4] = ((stbd shr 8) and 0xFF).toByte()
+            
+            characteristic.value = data
+            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            deviceGatt.writeCharacteristic(characteristic)
+        }
+    }
+
     private val scanLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r -> 
         if (r.resultCode == Activity.RESULT_OK) {
             val address = r.data?.getStringExtra("device_address")
@@ -122,13 +153,17 @@ class MainActivity : AppCompatActivity() {
         binding.btnKeepScreenOn.setOnClickListener { toggleKeepScreenOn() }
         binding.btnLogToggle.setOnClickListener { toggleLogging() }
         binding.btnToggleDisplay.setOnClickListener { toggleDisplayMode() }
+        
+        binding.btnMotorPage.setOnClickListener {
+            startActivity(Intent(this, MotorControlActivity::class.java))
+        }
 
         binding.btnPidHold.setOnClickListener { setTarget((currentHeading + gpsHeadingOffset + 360) % 360) }
         binding.btnPidM10.setOnClickListener { adjustTarget(-10.0) }
         binding.btnPidM1.setOnClickListener { adjustTarget(-1.0) }
         binding.btnPidP1.setOnClickListener { adjustTarget(1.0) }
         binding.btnPidP10.setOnClickListener { adjustTarget(10.0) }
-        binding.btnPidStop.setOnClickListener { targetHeading = null; updatePidUi() }
+        binding.btnPidStop.setOnClickListener { targetHeading = null; updatePidUi(); stopMotors() }
         
         setupSpinners()
         setupPidInputs()
@@ -260,8 +295,10 @@ class MainActivity : AppCompatActivity() {
         override fun onLocationChanged(l: Location) {
             if (isGpsConnected) return // BLE GPS takes priority
             currentGpsSpeedKnots = l.speed * 1.94384
+            latestSpeed = currentGpsSpeedKnots
             if (!isConnected && l.hasBearing() && displayMode == 1) {
                 currentHeading = l.bearing.toDouble()
+                latestHeading = currentHeading
                 updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             } else if (isConnected && currentSeaState <= 2 && currentGpsSpeedKnots >= minGpsSpeedKnots && l.hasBearing()) {
                 val magH = (currentHeading + 360) % 360
@@ -283,22 +320,12 @@ class MainActivity : AppCompatActivity() {
             override fun onConnectionStateChange(g: BluetoothGatt, s: Int, newState: Int) {
                 runOnUiThread {
                     if (newState == BluetoothProfile.STATE_CONNECTED) {
-                        if (name == "AC6328_GPS") {
-                            isGpsConnected = true
-                            if (!isConnected) displayMode = 1 // Switch to GPS if IMU not connected
-                        } else {
-                            isConnected = true
-                            if (!isGpsConnected) displayMode = 0 // Switch to IMU if GPS not connected
-                        }
+                        if (name == "AC6328_GPS") isGpsConnected = true else isConnected = true
                         g.discoverServices()
                     } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                        if (name == "AC6328_GPS") {
-                            isGpsConnected = false; gpsGatt = null
-                            if (displayMode == 1 && isConnected) displayMode = 0 // Fallback to IMU
-                        } else {
-                            isConnected = false; imuGatt = null
-                            if (displayMode == 0 && isGpsConnected) displayMode = 1 // Fallback to GPS
-                        }
+                        if (name == "AC6328_GPS") { isGpsConnected = false; gpsGatt = null } 
+                        else { isConnected = false; imuGatt = null; imuGattInstance = null }
+                        runOnUiThread { binding.btnScan.text = "Connect" }
                         
                         if (!isConnected && !isGpsConnected) {
                             resetDisplay()
@@ -312,7 +339,15 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             override fun onServicesDiscovered(g: BluetoothGatt, s: Int) {
-                g.getService(SERVICE_UUID)?.getCharacteristic(CHAR_UUID)?.let {
+                if (g.device.name != "AC6328_GPS") imuGattInstance = g
+                
+                // Determine active service UUID
+                val service = g.getService(SERVICE_AE30) ?: g.getService(SERVICE_AE00)
+                if (service != null && g.device.name != "AC6328_GPS") {
+                    activeServiceUuid = service.uuid
+                }
+
+                service?.getCharacteristic(CHAR_DATA)?.let {
                     g.setCharacteristicNotification(it, true)
                     it.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))?.let { d -> 
                         d.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
@@ -340,7 +375,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun processRawData(data: ByteArray) {
-        if (data.size < 17) return
+        if (data.size < 5) return
         val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
         val header = data[0].toInt() and 0xFF
         
@@ -373,13 +408,16 @@ class MainActivity : AppCompatActivity() {
                 if (ACCT_ROTATED_180) { gxDeg = -gxDeg; gyDeg = -gyDeg }
                 if (INVERT_GYRO_Z) gzDeg = -gzDeg
 
-                currentHeading = runKalman(ax, ay, az, gzDeg, mx, my, mz, dt)
+                currentHeading = runKalman(ax, ay, az, gxDeg, gyDeg, gzDeg, mx, my, mz, dt)
+                latestHeading = currentHeading
 
                 val amag = sqrt(ax*ax + ay*ay + az*az)
                 var rollDeg = 0.0; var pitchDeg = 0.0
                 if (amag > 0) {
                     val phi = atan2(ay, az); val theta = atan2(-ax, ay * sin(phi) + az * cos(phi))
                     rollDeg = Math.toDegrees(phi); pitchDeg = Math.toDegrees(theta)
+                    latestRoll = rollDeg
+                    latestPitch = pitchDeg
                 }
 
                 val motion = abs(amag / 2048.0 - 1.0) + abs(gzDeg / 100.0)
@@ -410,13 +448,16 @@ class MainActivity : AppCompatActivity() {
                 val accHead = (buffer.getShort(14).toInt() and 0xFFFF) / 1000.0f
                 val usedSV = data[16].toInt() and 0xFF
 
-                Log.d("GPS_ORI", "T:$timeMs Q:$quality H:$heading accH:$accHead P:$pitch R:$roll SV:$usedSV")
+                Log.d("GPS_ORI", "Q:$quality Head:$heading Pitch:$pitch Roll:$roll SV:$usedSV")
                 
                 if (displayMode == 1) {
                     currentHeading = heading.toDouble()
+                    latestHeading = currentHeading
+                    latestRoll = roll.toDouble()
+                    latestPitch = pitch.toDouble()
                     updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, roll.toDouble(), pitch.toDouble())
                     runOnUiThread {
-                        binding.txtRawData.text = "GPS ORI T:$timeMs Q:$quality H:$heading accH:$accHead P:$pitch R:$roll SV:$usedSV"
+                        binding.txtRawData.text = "GPS ORI Time:$timeMs Q:$quality Head:$heading accHead:$accHead Pitch:$pitch Roll:$roll SV:$usedSV"
                     }
                 }
             }
@@ -433,15 +474,17 @@ class MainActivity : AppCompatActivity() {
                 Log.d("GPS_POS", "Lat: $lat Lon: $lon Speed: $speedKnots Course: $course")
                 
                 currentGpsSpeedKnots = speedKnots.toDouble()
+                latestSpeed = currentGpsSpeedKnots
                 
                 if (displayMode == 1 && !isConnected && !isGpsConnected) { 
                     currentHeading = course.toDouble()
+                    latestHeading = currentHeading
                     updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) 
                 }
                 
                 if (displayMode == 1) {
                     runOnUiThread {
-                        binding.txtRawData.text = "GPS POS T:$timeMs Lat:%.6f Lon:%.6f Spd:%.1f Crs:%.1f".format(lat, lon, speedKnots, course)
+                        binding.txtRawData.text = "GPS POS Time:$timeMs Lat:%.6f Lon:%.6f Spd:%.1f Crs:%.1f".format(lat, lon, speedKnots, course)
                     }
                 }
 
@@ -451,6 +494,14 @@ class MainActivity : AppCompatActivity() {
                     while (diff > 180) diff -= 360; while (diff < -180) diff += 360
                     gpsHeadingOffset = 0.995 * gpsHeadingOffset + 0.005 * diff
                     saveCalibration()
+                }
+            }
+            0x01, 0x02, 0xFF -> {
+                // Motor Command Echo
+                val port = buffer.getShort(1).toInt() and 0xFFFF
+                val stbd = buffer.getShort(3).toInt() and 0xFFFF
+                runOnUiThread {
+                    binding.txtRawData.text = "ECHO: CMD:%02X P:%d S:%d".format(header, port, stbd)
                 }
             }
         }
@@ -464,14 +515,14 @@ class MainActivity : AppCompatActivity() {
         return if (nmea < 0) -decimal else decimal
     }
 
-    private fun runKalman(ax: Double, ay: Double, az: Double, gz: Double, mx: Double, my: Double, mz: Double, dt: Double): Double {
+    private fun runKalman(ax: Double, ay: Double, az: Double, gxDeg: Double, gyDeg: Double, gzDeg: Double, mx: Double, my: Double, mz: Double, dt: Double): Double {
         val amag = sqrt(ax*ax + ay*ay + az*az); if (amag == 0.0) return (Math.toDegrees(kfHeading) + 360) % 360
         val nax = ax/amag; val nay = ay/amag; val naz = az/amag
         val phi = atan2(nay, naz); val theta = atan2(-nax, nay * sin(phi) + naz * cos(phi))
         val xh = mx * cos(theta) + my * sin(phi) * sin(theta) + mz * cos(phi) * sin(theta)
         val yh = my * cos(phi) - mz * sin(phi)
         val magHeading = atan2(yh, xh) 
-        kfHeading += Math.toRadians(gz * dt); kfP += kfQ
+        kfHeading += Math.toRadians(gzDeg * dt); kfP += kfQ
         var diff = magHeading - kfHeading; while (diff > PI) diff -= 2 * PI; while (diff < -PI) diff += 2 * PI
         kfHeading += (kfP / (kfP + kfR)) * diff; kfP = (1.0 - (kfP / (kfP + kfR))) * kfP
         while (kfHeading > PI) kfHeading -= 2 * PI; while (kfHeading < -PI) kfHeading += 2 * PI
@@ -483,9 +534,8 @@ class MainActivity : AppCompatActivity() {
         calDialog = AlertDialog.Builder(this).setTitle("Mag Calibration").setMessage("Rotate 3D...").setPositiveButton("Done") { _, _ ->
             isCalibratingMag = false
             offsetX = (minMx + maxMx) / 2.0; offsetY = (minMy + maxMy) / 2.0; offsetZ = (minMz + maxMz) / 2.0
-            val dx = (maxMx - minMx) / 2.0; val dy = (maxMy - minMy) / 2.0; val dz = (maxMz - minMz) / 2.0
-            val avg = (dx + dy + dz) / 3.0
-            scaleX = if (dx > 1.0) avg / dx else 1.0; scaleY = if (dy > 1.0) avg / dy else 1.0; scaleZ = if (dz > 1.0) avg / dz else 1.0
+            val avg = ((maxMx - minMx) / 2.0 + (maxMy - minMy) / 2.0 + (maxMz - minMz) / 2.0) / 3.0
+            scaleX = if ((maxMx - minMx) > 2.0) avg / ((maxMx - minMx) / 2.0) else 1.0; scaleY = if ((maxMy - minMy) > 2.0) avg / ((maxMy - minMy) / 2.0) else 1.0; scaleZ = if ((maxMz - minMz) > 2.0) avg / ((maxMz - minMz) / 2.0) else 1.0
             saveCalibration(); Toast.makeText(this, "Mag Calibrated", Toast.LENGTH_SHORT).show()
         }.show()
     }
@@ -507,12 +557,35 @@ class MainActivity : AppCompatActivity() {
         val current = (currentHeading + gpsHeadingOffset + 360) % 360
         var error = targetHeading!! - current
         if (error > 180) error -= 360 else if (error < -180) error += 360
+        
         val activeDb = if (isAutoDeadband) max(3.0, currentSeaState.toDouble()) else deadband
-        if (abs(error) < activeDb) { pidIntegral = 0.0; return }
+        if (abs(error) < activeDb) { 
+            pidIntegral = 0.0
+            stopMotors() 
+            return 
+        }
+        
         pidIntegral = (pidIntegral + error * dt).coerceIn(-500.0, 500.0)
         val deriv = (error - pidLastError) / dt
         val output = pidKp * error + pidKi * pidIntegral + pidKd * deriv
         pidLastError = error
+
+        // Map PID output to Differential Thrust
+        val throttle = if (motorMode == 1) 2000 else 750 
+        val diff = (output * 10).toInt() 
+        
+        val pVal = (throttle + diff)
+        val sVal = (throttle - diff)
+        
+        val cmd = if (motorMode == 1) 0x02 else 0x01
+        val maxVal = if (motorMode == 1) 10000 else 1000
+        val minVal = if (motorMode == 1) 0 else 500
+        
+        sendMotorCommand(imuGattInstance, cmd, pVal.coerceIn(minVal, maxVal), sVal.coerceIn(minVal, maxVal))
+    }
+
+    private fun stopMotors() {
+        sendMotorCommand(imuGattInstance, 0xFF, 0, 0)
     }
 
     private fun updateUi(ax: Double, ay: Double, az: Double, mx: Double, my: Double, mz: Double, roll: Double, pitch: Double) {
@@ -526,7 +599,12 @@ class MainActivity : AppCompatActivity() {
             
             // Display Roll/Pitch with color logic
             binding.txtRollPitch.text = "R: %.1f° P: %.1f°".format(roll, pitch)
-            if (abs(pitch) > 5.0 || abs(roll) > 15.0) binding.txtRollPitch.setTextColor(Color.RED) else binding.txtRollPitch.setTextColor(0xFF616161.toInt())
+            if (abs(pitch) > 5.0 || abs(roll) > 15.0) {
+                binding.txtRollPitch.setTextColor(Color.RED)
+            } else {
+                binding.txtRollPitch.setTextColor(0xFF616161.toInt())
+            }
+
             updatePidUi()
         }
     }

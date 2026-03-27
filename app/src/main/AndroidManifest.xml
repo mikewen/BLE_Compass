@@ -17,5 +17,6 @@
             </intent-filter>
         </activity>
         <activity android:name=".ScanActivity" android:label="Scan Devices" />
+        <activity android:name=".MotorControlActivity" android:label="Motor Control" />
     </application>
 </manifest>
