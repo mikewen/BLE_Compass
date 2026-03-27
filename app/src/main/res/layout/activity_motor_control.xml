@@ -52,27 +52,38 @@
             </RadioGroup>
         </LinearLayout>
 
-        <!-- Heading -->
-        <TextView
-            android:id="@+id/txtHeading"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="0°"
-            android:textSize="80sp"
-            android:textStyle="bold"
+            android:orientation="horizontal"
             android:gravity="center"
-            android:textColor="#FF0000"/>
+            android:layout_marginBottom="4dp">
 
-        <!-- Speed -->
-        <TextView
-            android:id="@+id/txtSpeed"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="0.0 kn"
-            android:textSize="40sp"
-            android:textStyle="bold"
-            android:gravity="center"
-            android:textColor="#1B5E20"/>
+            <TextView
+                android:id="@+id/txtHeading"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="0°"
+                android:textSize="80sp"
+                android:textStyle="bold"
+                android:gravity="center"
+                android:textColor="#FF0000"
+                android:includeFontPadding="false"/>
+
+            <TextView
+                android:id="@+id/txtSpeed"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="0.0 kn"
+                android:textSize="80sp"
+                android:textStyle="bold"
+                android:gravity="center"
+                android:textColor="#1B5E20"
+                android:includeFontPadding="false"/>
+
+        </LinearLayout>
         <TextView
             android:id="@+id/txtRollPitch"
             android:layout_width="match_parent"

@@ -164,7 +164,22 @@ class MotorControlActivity : AppCompatActivity() {
 
     private fun updateSensorDisplay() {
         binding.txtHeading.text = "%.0f°".format(MainActivity.latestHeading)
-        binding.txtSpeed.text = "%.1f kn".format(MainActivity.latestSpeed)
+        val speedStr = "%.1f kn".format(MainActivity.latestSpeed)
+
+        val spannable = android.text.SpannableString(speedStr)
+
+        // make "kn" smaller
+        val unitStart = speedStr.indexOf("kn")
+        if (unitStart >= 0) {
+            spannable.setSpan(
+                android.text.style.RelativeSizeSpan(0.2f), // 50% size
+                unitStart,
+                speedStr.length,
+                android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+
+        binding.txtSpeed.text = spannable
         binding.txtRollPitch.text = "R: %.1f° P: %.1f°".format(MainActivity.latestRoll, MainActivity.latestPitch)
         
         if (abs(MainActivity.latestPitch) > 5.0 || abs(MainActivity.latestRoll) > 15.0) {
