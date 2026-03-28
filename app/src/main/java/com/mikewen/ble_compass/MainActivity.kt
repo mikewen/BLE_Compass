@@ -58,6 +58,8 @@ class MainActivity : AppCompatActivity() {
     private var isCalibratingGyro = false
     private var gyroOffX = 0.0; private var gyroOffY = 0.0; private var gyroOffZ = 0.0
     private var gyroSumX = 0.0; private var gyroSumY = 0.0; private var gyroSumZ = 0.0
+
+    var gyroScaleDegS: Float = 256f
     private var gyroCount = 0
     private var gyroCalibTimer: CountDownTimer? = null
     private var calDialog: AlertDialog? = null
@@ -404,7 +406,7 @@ class MainActivity : AppCompatActivity() {
                 if (ACCT_ROTATED_180) { ax = -ax; ay = -ay }
                 var mx = (rawMx - offsetX) * scaleX; var my = (rawMy - offsetY) * scaleY; var mz = (rawMz - offsetZ) * scaleZ
                 if (INVERT_MAG_Z) mz = -mz
-                var gxDeg = (rawGx - gyroOffX) / 64.0; var gyDeg = (rawGy - gyroOffY) / 64.0; var gzDeg = (rawGz - gyroOffZ) / 64.0
+                var gxDeg = (rawGx - gyroOffX) / gyroScaleDegS; var gyDeg = (rawGy - gyroOffY) / gyroScaleDegS; var gzDeg = (rawGz - gyroOffZ) / gyroScaleDegS
                 if (ACCT_ROTATED_180) { gxDeg = -gxDeg; gyDeg = -gyDeg }
                 if (INVERT_GYRO_Z) gzDeg = -gzDeg
 
