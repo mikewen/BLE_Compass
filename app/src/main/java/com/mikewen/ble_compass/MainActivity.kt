@@ -103,6 +103,7 @@ class MainActivity : AppCompatActivity() {
         var latestSpeed = 0.0
         var latestRoll = 0.0
         var latestPitch = 0.0
+        var latestRawMagHeading = 0.0
         var motorMode = 0 // 0: ESC, 1: BLDC
 
         @SuppressLint("MissingPermission")
@@ -151,7 +152,8 @@ class MainActivity : AppCompatActivity() {
         binding.btnScan.setOnClickListener { checkPermissionsAndScan() }
         binding.btnCalibrateMag.setOnClickListener { startMagCalibration() }
         binding.btnCalibrateGyro.setOnClickListener { startGyroCalibration() }
-        binding.btnResetGps.setOnClickListener { gpsHeadingOffset = 0.0; saveCalibration(); Toast.makeText(this, "GPS Reset", Toast.LENGTH_SHORT).show() }
+        binding.btnResetGps.setOnClickListener { gpsHeadingOffset = 0.0; saveCalibration(); updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) }
+        
         binding.btnKeepScreenOn.setOnClickListener { toggleKeepScreenOn() }
         binding.btnLogToggle.setOnClickListener { toggleLogging() }
         binding.btnToggleDisplay.setOnClickListener { toggleDisplayMode() }
@@ -188,7 +190,7 @@ class MainActivity : AppCompatActivity() {
     private fun resetDisplay() {
         runOnUiThread {
             binding.txtHeading.text = "--"
-            binding.txtRollPitch.text = "R: 0.0° P: 0.0°"
+            binding.txtRollPitch.text = "R: 0.0° P: 0.0° M: 0°"
             binding.txtRollPitch.setTextColor(0xFF616161.toInt())
             binding.txtGpsInfo.text = "0.0 kn"
             binding.txtGpsOffset.text = "0.0°"
@@ -301,7 +303,7 @@ class MainActivity : AppCompatActivity() {
             if (!isConnected && l.hasBearing() && displayMode == 1) {
                 currentHeading = l.bearing.toDouble()
                 latestHeading = currentHeading
-                updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             } else if (isConnected && currentSeaState <= 2 && currentGpsSpeedKnots >= minGpsSpeedKnots && l.hasBearing()) {
                 val magH = (currentHeading + 360) % 360
                 var diff = l.bearing.toDouble() - magH
@@ -410,17 +412,26 @@ class MainActivity : AppCompatActivity() {
                 if (ACCT_ROTATED_180) { gxDeg = -gxDeg; gyDeg = -gyDeg }
                 if (INVERT_GYRO_Z) gzDeg = -gzDeg
 
-                currentHeading = runKalman(ax, ay, az, gxDeg, gyDeg, gzDeg, mx, my, mz, dt)
-                latestHeading = currentHeading
-
+                // 1. Calculate tilt compensated raw magnetic heading before runKalman
                 val amag = sqrt(ax*ax + ay*ay + az*az)
                 var rollDeg = 0.0; var pitchDeg = 0.0
+                var rawMagHeading = 0.0
                 if (amag > 0) {
-                    val phi = atan2(ay, az); val theta = atan2(-ax, ay * sin(phi) + az * cos(phi))
+                    val nax = ax/amag; val nay = ay/amag; val naz = az/amag
+                    val phi = atan2(nay, naz); val theta = atan2(-nax, nay * sin(phi) + naz * cos(phi))
                     rollDeg = Math.toDegrees(phi); pitchDeg = Math.toDegrees(theta)
                     latestRoll = rollDeg
                     latestPitch = pitchDeg
+
+                    val xh = mx * cos(theta) + my * sin(phi) * sin(theta) + mz * cos(phi) * sin(theta)
+                    val yh = my * cos(phi) - mz * sin(phi)
+                    rawMagHeading = (Math.toDegrees(atan2(yh, xh)) + 360) % 360
+                    latestRawMagHeading = rawMagHeading
                 }
+
+                // 2. Run Kalman (which internally performs similar tilt compensation)
+                currentHeading = runKalman(ax, ay, az, gxDeg, gyDeg, gzDeg, mx, my, mz, dt)
+                latestHeading = currentHeading
 
                 val motion = abs(amag / 2048.0 - 1.0) + abs(gzDeg / 100.0)
                 motionBuffer.add(motion); if (motionBuffer.size > BUFFER_SIZE) motionBuffer.removeAt(0)
@@ -429,7 +440,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (displayMode == 0) {
                     if (now - lastUiUpdateTime > 200) { 
-                        updateUi(ax, ay, az, mx, my, mz, rollDeg, pitchDeg)
+                        updateUi(ax, ay, az, mx, my, mz, rollDeg, pitchDeg, rawMagHeading)
                         lastUiUpdateTime = now 
                     }
                     runOnUiThread {
@@ -457,7 +468,7 @@ class MainActivity : AppCompatActivity() {
                     latestHeading = currentHeading
                     latestRoll = roll.toDouble()
                     latestPitch = pitch.toDouble()
-                    updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, roll.toDouble(), pitch.toDouble())
+                    updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, roll.toDouble(), pitch.toDouble(), 0.0)
                     runOnUiThread {
                         binding.txtRawData.text = "GPS ORI Time:$timeMs Q:$quality Head:$heading accHead:$accHead Pitch:$pitch Roll:$roll SV:$usedSV"
                     }
@@ -481,7 +492,7 @@ class MainActivity : AppCompatActivity() {
                 if (displayMode == 1 && !isConnected && !isGpsConnected) { 
                     currentHeading = course.toDouble()
                     latestHeading = currentHeading
-                    updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) 
+                    updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) 
                 }
                 
                 if (displayMode == 1) {
@@ -590,7 +601,7 @@ class MainActivity : AppCompatActivity() {
         sendMotorCommand(imuGattInstance, 0xFF, 0, 0)
     }
 
-    private fun updateUi(ax: Double, ay: Double, az: Double, mx: Double, my: Double, mz: Double, roll: Double, pitch: Double) {
+    private fun updateUi(ax: Double, ay: Double, az: Double, mx: Double, my: Double, mz: Double, roll: Double, pitch: Double, rawMag: Double) {
         val deg = (currentHeading + gpsHeadingOffset + 360) % 360
         runOnUiThread {
             binding.txtHeading.text = "%.0f°".format(deg)
@@ -599,8 +610,8 @@ class MainActivity : AppCompatActivity() {
             binding.txtGpsInfo.text = "%.1f kn".format(currentGpsSpeedKnots)
             binding.txtGpsOffset.text = "%.1f°".format(gpsHeadingOffset)
             
-            // Display Roll/Pitch with color logic
-            binding.txtRollPitch.text = "R: %.1f° P: %.1f°".format(roll, pitch)
+            // Display Roll/Pitch/RawMag with color logic
+            binding.txtRollPitch.text = "R:%.1f° P:%.1f° M:%.0f°".format(roll, pitch, rawMag)
             if (abs(pitch) > 5.0 || abs(roll) > 15.0) {
                 binding.txtRollPitch.setTextColor(Color.RED)
             } else {

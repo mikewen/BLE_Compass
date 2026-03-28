@@ -36,9 +36,14 @@ The code is pre-configured for modules where the Magnetometer is rotated 180° r
 
 ## 📝 How to Make Simple Changes
 - **Change Sensor Orientation**: Locate the `Hardware Alignment` section at the top of `MainActivity.kt` and toggle the boolean flags.
-- **Adjust Filter Smoothness**: In `MainActivity.kt`, increase `kfR` for more smoothing or increase `kfQ` for faster response.
+- **Adjust Filter Tuning (Kalman)**: 
+    - **Increase Gyro Weight (Short-term stability)**: To trust the gyroscope integration more and the magnetometer less, **increase `kfR`** (e.g., from 0.1 to 0.5) or **decrease `kfQ`** (e.g., from 0.0005 to 0.0001). This reduces heading "jitter" but makes the compass slower to correct long-term drift.
+    - **Faster Response**: Increase `kfQ` or decrease `kfR`.
 - **Modify Warning Thresholds**: Search for `updateUi` in `MainActivity.kt` and change the `abs(pitch) > 5.0` or `abs(roll) > 15.0` values.
 - **Custom Packet Parsing**: Add new `case` statements inside the `when(header)` block in `processRawData()`.
+
+## 📈 Advanced: Dynamic Weighting
+For high-performance marine use, consider scaling `kfR` based on `currentSeaState`. When the boat is tossing (High Sea State), the magnetometer tilt-compensation becomes less reliable. In these moments, you can dynamically increase `kfR` inside `processRawData()` to rely almost entirely on the gyroscope until the motion subsides.
 
 ## 📁 Developer Notes
 - **Fusion Rate**: 50Hz (20ms packets).

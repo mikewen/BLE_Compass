@@ -180,7 +180,7 @@ class MotorControlActivity : AppCompatActivity() {
         }
 
         binding.txtSpeed.text = spannable
-        binding.txtRollPitch.text = "R: %.1f° P: %.1f°".format(MainActivity.latestRoll, MainActivity.latestPitch)
+        binding.txtRollPitch.text = "R: %.1f° P: %.1f° M: %.0f°".format(MainActivity.latestRoll, MainActivity.latestPitch, MainActivity.latestRawMagHeading)
         
         if (abs(MainActivity.latestPitch) > 5.0 || abs(MainActivity.latestRoll) > 15.0) {
             binding.txtRollPitch.setTextColor(Color.RED)
