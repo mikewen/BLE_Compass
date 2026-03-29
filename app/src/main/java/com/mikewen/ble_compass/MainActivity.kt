@@ -85,6 +85,10 @@ class MainActivity : AppCompatActivity() {
     private val pidRunnable = object : Runnable {
         override fun run() { if (targetHeading != null) runPidLoop(PID_INTERVAL_MS / 1000.0); pidHandler.postDelayed(this, PID_INTERVAL_MS) }
     }
+    private val workerHandler = Handler(HandlerThread("IMU").apply { start() }.looper)
+    private val sharedBuffer = ByteBuffer
+        .allocate(32)
+        .order(ByteOrder.LITTLE_ENDIAN)
 
     private var isKeepScreenOn = false; private var isLogging = false
     private var gpsHeadingOffset = 0.0; private var currentGpsSpeedKnots = 0.0; private var minGpsSpeedKnots = 2.0
@@ -133,12 +137,22 @@ class MainActivity : AppCompatActivity() {
             if (address != null) connectToDevice(address, name)
         }
     }
-    private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { p -> 
-        if (p.entries.all { it.value }) { 
-            openScanActivity()
-            startGpsUpdates()
-        } 
-    }
+    private val requestPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+
+            val denied = result.filterValues { !it }.keys
+
+            if (denied.isEmpty()) {
+                openScanActivity()
+                startGpsUpdates()
+            } else {
+                Toast.makeText(
+                    this,
+                    "Permissions denied: $denied",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -273,14 +287,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkPermissionsAndScan() {
-        val perms = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) perms.removeAll { it == Manifest.permission.BLUETOOTH_SCAN || it == Manifest.permission.BLUETOOTH_CONNECT }
-        
-        if (perms.all { ActivityCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) { 
+        val perms = mutableListOf<String>()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            perms.add(Manifest.permission.BLUETOOTH_SCAN)
+            perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            perms.add(Manifest.permission.BLUETOOTH)
+            perms.add(Manifest.permission.BLUETOOTH_ADMIN)
+        }
+
+        val missing = perms.filter {
+            ActivityCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missing.isEmpty()) {
             openScanActivity()
             startGpsUpdates()
         } else {
-            requestPermissionLauncher.launch(perms.toTypedArray())
+            requestPermissionLauncher.launch(missing.toTypedArray())
         }
     }
 
@@ -325,6 +351,7 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     if (newState == BluetoothProfile.STATE_CONNECTED) {
                         if (name == "AC6328_GPS") isGpsConnected = true else isConnected = true
+                        g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                         g.discoverServices()
                     } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                         if (name == "AC6328_GPS") { isGpsConnected = false; gpsGatt = null } 
@@ -360,7 +387,13 @@ class MainActivity : AppCompatActivity() {
                 }
                 runOnUiThread { updateStatusText() }
             }
-            override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) { processRawData(c.value) }
+            //override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) { processRawData(c.value) }
+            override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
+                val dataCopy = c.value.clone()
+                workerHandler.post {
+                    processRawData(dataCopy)
+                }
+            }
         }
         
         if (name == "AC6328_GPS") {
@@ -380,7 +413,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun processRawData(data: ByteArray) {
         if (data.size < 5) return
-        val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        //val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        sharedBuffer.clear()
+        sharedBuffer.put(data)
+        sharedBuffer.flip()
+        val buffer = sharedBuffer
+        
         val header = data[0].toInt() and 0xFF
         
         val now = System.currentTimeMillis()
