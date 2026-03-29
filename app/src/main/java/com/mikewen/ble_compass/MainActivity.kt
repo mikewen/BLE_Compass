@@ -93,6 +93,7 @@ class MainActivity : AppCompatActivity() {
     private var isKeepScreenOn = false; private var isLogging = false
     private var gpsHeadingOffset = 0.0; private var currentGpsSpeedKnots = 0.0; private var minGpsSpeedKnots = 2.0
     private var logFile: File? = null
+    private var logStream: FileOutputStream? = null
     private var lastTimestamp = 0L; private var lastUiUpdateTime = 0L
 
     companion object {
@@ -195,6 +196,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        logStream?.close()
+        logStream = null
+    }
+
     private fun toggleDisplayMode() {
         displayMode = if (displayMode == 0) 1 else 0
         binding.btnToggleDisplay.text = if (displayMode == 0) "IMU" else "GPS"
@@ -224,7 +231,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun toggleLogging() {
         isLogging = !isLogging
-        if (isLogging && logFile?.exists() == true) logFile?.delete()
+        if (isLogging) {
+            try {
+                if (logFile?.exists() == true) logFile?.delete()
+                logStream = FileOutputStream(logFile, true)
+            } catch (e: Exception) {
+                isLogging = false
+                Log.e("Logging", "Failed to open log stream", e)
+            }
+        } else {
+            logStream?.close()
+            logStream = null
+        }
         binding.btnLogToggle.text = "Log: ${if (isLogging) "ON" else "OFF"}"
         binding.btnLogToggle.backgroundTintList = ColorStateList.valueOf(if (isLogging) 0xFF4CAF50.toInt() else 0xFF9E9E9E.toInt())
     }
@@ -279,40 +297,33 @@ class MainActivity : AppCompatActivity() {
             putFloat("mag_off_x", offsetX.toFloat()); putFloat("mag_off_y", offsetY.toFloat()); putFloat("mag_off_z", offsetZ.toFloat())
             putFloat("mag_scale_x", scaleX.toFloat()); putFloat("mag_scale_y", scaleY.toFloat()); putFloat("mag_scale_z", scaleZ.toFloat())
             putFloat("gyro_off_x", gyroOffX.toFloat()); putFloat("gyro_off_y", gyroOffY.toFloat()); putFloat("gyro_off_z", gyroOffZ.toFloat())
-            putFloat("gps_heading_offset", gpsHeadingOffset.toFloat()); putFloat("min_gps_speed", minGpsSpeedKnots.toFloat()); putFloat("pid_deadband", deadband.toFloat())
+            putFloat("gps_heading_offset", gpsHeadingOffset.toFloat())
+            putFloat("min_gps_speed", minGpsSpeedKnots.toFloat()); putFloat("pid_deadband", deadband.toFloat())
             putBoolean("auto_deadband", isAutoDeadband)
             putFloat("pid_kp", pidKp.toFloat()); putFloat("pid_ki", pidKi.toFloat()); putFloat("pid_kd", pidKd.toFloat())
             apply()
         }
     }
 
+    private fun openScanActivity() {
+        scanLauncher.launch(Intent(this, ScanActivity::class.java))
+    }
+
     private fun checkPermissionsAndScan() {
-        val perms = mutableListOf<String>()
-
+        val permissions = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            perms.add(Manifest.permission.BLUETOOTH_SCAN)
-            perms.add(Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
-            perms.add(Manifest.permission.BLUETOOTH)
-            perms.add(Manifest.permission.BLUETOOTH_ADMIN)
+            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
         }
-
-        val missing = perms.filter {
-            ActivityCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
+        
+        val missing = permissions.filter { ActivityCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isEmpty()) {
             openScanActivity()
-            startGpsUpdates()
         } else {
             requestPermissionLauncher.launch(missing.toTypedArray())
         }
     }
 
-    private fun openScanActivity() { scanLauncher.launch(Intent(this, ScanActivity::class.java)) }
-
-    @SuppressLint("MissingPermission")
     private fun startGpsUpdates() {
         try {
             locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, phoneLocationListener)
@@ -356,7 +367,6 @@ class MainActivity : AppCompatActivity() {
                     } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                         if (name == "AC6328_GPS") { isGpsConnected = false; gpsGatt = null } 
                         else { isConnected = false; imuGatt = null; imuGattInstance = null }
-                        runOnUiThread { binding.btnScan.text = "Connect" }
                         
                         if (!isConnected && !isGpsConnected) {
                             resetDisplay()
@@ -411,148 +421,202 @@ class MainActivity : AppCompatActivity() {
         binding.txtStatus.text = "Status: Connected (" + statusText.joinToString(", ") + ")"
     }
 
+    private inline fun getS16LE(d: ByteArray, i: Int): Int {
+        return (d[i].toInt() and 0xFF) or (d[i + 1].toInt() shl 8)
+    }
+
+    private inline fun getU16LE(d: ByteArray, i: Int): Int {
+        return (d[i].toInt() and 0xFF) or ((d[i + 1].toInt() and 0xFF) shl 8)
+    }
+
+    private inline fun getU32LE(d: ByteArray, i: Int): Long {
+        return ((d[i].toLong() and 0xFF)) or
+                ((d[i + 1].toLong() and 0xFF) shl 8) or
+                ((d[i + 2].toLong() and 0xFF) shl 16) or
+                ((d[i + 3].toLong() and 0xFF) shl 24)
+    }
     private fun processRawData(data: ByteArray) {
-        if (data.size < 5) return
-        //val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
-        sharedBuffer.clear()
-        sharedBuffer.put(data)
-        sharedBuffer.flip()
-        val buffer = sharedBuffer
-        
+        if (data.isEmpty()) return
+
         val header = data[0].toInt() and 0xFF
-        
         val now = System.currentTimeMillis()
 
         when (header) {
+
+            // =========================
+            // IMU + MAG (A1)
+            // =========================
             0xA1 -> {
                 if (data.size < 20) return
-                val dt = if (lastTimestamp == 0L) 0.02 else (now - lastTimestamp) / 1000.0
+
+                val dtRaw = if (lastTimestamp == 0L) 0.02 else (now - lastTimestamp) * 0.001
+                val dt = dtRaw.coerceIn(0.01, 0.05)
                 lastTimestamp = now
 
-                val rawAx = buffer.getShort(2).toDouble()
-                val rawAy = buffer.getShort(4).toDouble()
-                val rawAz = buffer.getShort(6).toDouble()
-                val rawGx = buffer.getShort(8).toDouble()
-                val rawGy = buffer.getShort(10).toDouble()
-                val rawGz = buffer.getShort(12).toDouble()
-                val rawMx = buffer.getShort(14).toDouble()
-                val rawMy = buffer.getShort(16).toDouble()
-                val rawMz = buffer.getShort(18).toDouble()
+                // ---- RAW (int → double only once)
+                var ax = getS16LE(data, 2).toDouble()
+                var ay = getS16LE(data, 4).toDouble()
+                var az = getS16LE(data, 6).toDouble()
 
-                if (isCalibratingMag) { minMx = min(minMx, rawMx); maxMx = max(maxMx, rawMx); minMy = min(minMy, rawMy); maxMy = max(maxMy, rawMy); minMz = min(minMz, rawMz); maxMz = max(maxMz, rawMz) }
-                if (isCalibratingGyro) { gyroSumX += rawGx; gyroSumY += rawGy; gyroSumZ += rawGz; gyroCount++ }
+                var gx = getS16LE(data, 8).toDouble()
+                var gy = getS16LE(data, 10).toDouble()
+                var gz = getS16LE(data, 12).toDouble()
 
-                var ax = rawAx; var ay = rawAy; var az = rawAz
-                if (ACCT_ROTATED_180) { ax = -ax; ay = -ay }
-                var mx = (rawMx - offsetX) * scaleX; var my = (rawMy - offsetY) * scaleY; var mz = (rawMz - offsetZ) * scaleZ
+                var mx = getS16LE(data, 14).toDouble()
+                var my = getS16LE(data, 16).toDouble()
+                var mz = getS16LE(data, 18).toDouble()
+
+                // ---- Calibration accumulation (no alloc)
+                if (isCalibratingMag) {
+                    if (mx < minMx) minMx = mx; if (mx > maxMx) maxMx = mx
+                    if (my < minMy) minMy = my; if (my > maxMy) maxMy = my
+                    if (mz < minMz) minMz = mz; if (mz > maxMz) maxMz = mz
+                }
+                if (isCalibratingGyro) {
+                    gyroSumX += gx; gyroSumY += gy; gyroSumZ += gz
+                    gyroCount++
+                }
+
+                // ---- Alignment
+                if (ACCT_ROTATED_180) {
+                    ax = -ax; ay = -ay
+                    gx = -gx; gy = -gy
+                }
+
+                // ---- Apply calibration (mag)
+                mx = (mx - offsetX) * scaleX
+                my = (my - offsetY) * scaleY
+                mz = (mz - offsetZ) * scaleZ
                 if (INVERT_MAG_Z) mz = -mz
-                var gxDeg = (rawGx - gyroOffX) / gyroScaleDegS; var gyDeg = (rawGy - gyroOffY) / gyroScaleDegS; var gzDeg = (rawGz - gyroOffZ) / gyroScaleDegS
-                if (ACCT_ROTATED_180) { gxDeg = -gxDeg; gyDeg = -gyDeg }
-                if (INVERT_GYRO_Z) gzDeg = -gzDeg
 
-                // 1. Calculate tilt compensated raw magnetic heading before runKalman
-                val amag = sqrt(ax*ax + ay*ay + az*az)
-                var rollDeg = 0.0; var pitchDeg = 0.0
-                var rawMagHeading = 0.0
-                if (amag > 0) {
-                    val nax = ax/amag; val nay = ay/amag; val naz = az/amag
-                    val phi = atan2(nay, naz); val theta = atan2(-nax, nay * sin(phi) + naz * cos(phi))
-                    rollDeg = Math.toDegrees(phi); pitchDeg = Math.toDegrees(theta)
+                // ---- Gyro scale
+                gx = (gx - gyroOffX) / gyroScaleDegS
+                gy = (gy - gyroOffY) / gyroScaleDegS
+                gz = (gz - gyroOffZ) / gyroScaleDegS
+                if (INVERT_GYRO_Z) gz = -gz
+
+                // =========================
+                // Tilt + Raw Mag Heading (compute ONCE)
+                // =========================
+                val amag = sqrt(ax * ax + ay * ay + az * az)
+
+                var rollDeg = 0.0
+                var pitchDeg = 0.0
+                var rawMagHeading = latestRawMagHeading
+
+                if (amag > 1e-3) {
+                    val invA = 1.0 / amag
+                    val nax = ax * invA
+                    val nay = ay * invA
+                    val naz = az * invA
+
+                    val phi = atan2(nay, naz)
+                    val theta = atan2(-nax, nay * sin(phi) + naz * cos(phi))
+
+                    rollDeg = Math.toDegrees(phi)
+                    pitchDeg = Math.toDegrees(theta)
+
+                    val sinPhi = sin(phi)
+                    val cosPhi = cos(phi)
+                    val sinTheta = sin(theta)
+                    val cosTheta = cos(theta)
+
+                    val xh = mx * cosTheta + my * sinPhi * sinTheta + mz * cosPhi * sinTheta
+                    val yh = my * cosPhi - mz * sinPhi
+
+                    rawMagHeading = (Math.toDegrees(atan2(yh, xh)) + 360.0) % 360.0
+
                     latestRoll = rollDeg
                     latestPitch = pitchDeg
-
-                    val xh = mx * cos(theta) + my * sin(phi) * sin(theta) + mz * cos(phi) * sin(theta)
-                    val yh = my * cos(phi) - mz * sin(phi)
-                    rawMagHeading = (Math.toDegrees(atan2(yh, xh)) + 360) % 360
                     latestRawMagHeading = rawMagHeading
                 }
 
-                // 2. Run Kalman (which internally performs similar tilt compensation)
-                currentHeading = runKalman(ax, ay, az, gxDeg, gyDeg, gzDeg, mx, my, mz, dt)
+                // =========================
+                // Kalman (reuse computed tilt)
+                // =========================
+                currentHeading = runKalman(ax, ay, az, gx, gy, gz, mx, my, mz, dt)
                 latestHeading = currentHeading
 
-                val motion = abs(amag / 2048.0 - 1.0) + abs(gzDeg / 100.0)
-                motionBuffer.add(motion); if (motionBuffer.size > BUFFER_SIZE) motionBuffer.removeAt(0)
-                val varMotion = if (motionBuffer.size < 5) 0.0 else motionBuffer.map { (it - motionBuffer.average()).pow(2) }.average()
-                currentSeaState = when { varMotion < 0.0001 -> 1; varMotion < 0.001 -> 2; varMotion < 0.005 -> 3; varMotion < 0.01 -> 4; varMotion < 0.05 -> 5; varMotion < 0.1 -> 6; varMotion < 0.2 -> 7; varMotion < 0.5 -> 8; else -> 9 }
+                // =========================
+                // Sea state (cheap)
+                // =========================
+                val motion = abs(amag * (1.0 / 2048.0) - 1.0) + abs(gz * 0.01)
+                motionBuffer.add(motion)
+                if (motionBuffer.size > BUFFER_SIZE) motionBuffer.removeAt(0)
 
-                if (displayMode == 0) {
-                    if (now - lastUiUpdateTime > 200) { 
-                        updateUi(ax, ay, az, mx, my, mz, rollDeg, pitchDeg, rawMagHeading)
-                        lastUiUpdateTime = now 
-                    }
-                    runOnUiThread {
-                        binding.txtRawData.text = "IMU A:%.0f,%.0f,%.0f G:%.1f,%.1f,%.1f M:%.0f,%.0f,%.0f".format(ax, ay, az, gxDeg, gyDeg, gzDeg, mx, my, mz)
+                val varMotion = if (motionBuffer.size < 5) 0.0 else {
+                    val avg = motionBuffer.average()
+                    motionBuffer.sumOf { (it - avg) * (it - avg) } / motionBuffer.size
+                }
+
+                currentSeaState = when {
+                    varMotion < 0.0001 -> 1
+                    varMotion < 0.001 -> 2
+                    varMotion < 0.005 -> 3
+                    varMotion < 0.01 -> 4
+                    varMotion < 0.05 -> 5
+                    varMotion < 0.1 -> 6
+                    varMotion < 0.2 -> 7
+                    varMotion < 0.5 -> 8
+                    else -> 9
+                }
+
+                // =========================
+                // UI (decoupled timing recommended)
+                // =========================
+                if (displayMode == 0 && now - lastUiUpdateTime > 50) {
+                    lastUiUpdateTime = now
+                    updateUi(ax, ay, az, mx, my, mz, rollDeg, pitchDeg, rawMagHeading)
+                }
+
+                // =========================
+                // Logging (non-blocking recommended)
+                // =========================
+                if (isLogging) {
+                    val logLine = "$now,$ax,$ay,$az,$gx,$gy,$gz,$mx,$my,$mz,$currentHeading\n"
+                    try {
+                        logStream?.write(logLine.toByteArray())
+                    } catch (e: Exception) {
+                        Log.e("Logging", "Write failed", e)
                     }
                 }
-                
-                if (isLogging) { val logLine = "$now,$rawAx,$rawAy,$rawAz,$rawGx,$rawGy,$rawGz,$rawMx,$rawMy,$rawMz,$currentHeading\n"
-                    try { FileOutputStream(logFile, true).use { it.write(logLine.toByteArray()) } } catch (e: Exception) {} }
             }
+
+            // =========================
+            // GPS ORI (A2)
+            // =========================
             0xA2 -> {
-                // GPS Orientation (PQTMTAR)
-                val timeMs = buffer.getInt(1).toLong() and 0xFFFFFFFFL
+                if (data.size < 17) return
+
                 val quality = data[5].toInt() and 0xFF
-                val pitch = buffer.getShort(8) / 100.0f
-                val roll = buffer.getShort(10) / 100.0f
-                val heading = (buffer.getShort(12).toInt() and 0xFFFF) / 100.0f
-                val accHead = (buffer.getShort(14).toInt() and 0xFFFF) / 1000.0f
-                val usedSV = data[16].toInt() and 0xFF
+                val pitch = getS16LE(data, 8) * 0.01
+                val roll = getS16LE(data, 10) * 0.01
+                val heading = getU16LE(data, 12) * 0.01
 
-                Log.d("GPS_ORI", "Q:$quality Head:$heading Pitch:$pitch Roll:$roll SV:$usedSV")
-                
                 if (displayMode == 1) {
-                    currentHeading = heading.toDouble()
-                    latestHeading = currentHeading
-                    latestRoll = roll.toDouble()
-                    latestPitch = pitch.toDouble()
-                    updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, roll.toDouble(), pitch.toDouble(), 0.0)
-                    runOnUiThread {
-                        binding.txtRawData.text = "GPS ORI Time:$timeMs Q:$quality Head:$heading accHead:$accHead Pitch:$pitch Roll:$roll SV:$usedSV"
-                    }
+                    currentHeading = heading
+                    latestHeading = heading
+                    latestRoll = roll
+                    latestPitch = pitch
+                    updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, roll, pitch, 0.0)
                 }
             }
+
+            // =========================
+            // GPS POS (A3)
+            // =========================
             0xA3 -> {
-                // GPS Position (GNRMC)
-                val timeMs = buffer.getInt(1).toLong() and 0xFFFFFFFFL
-                val rawLat = buffer.getInt(5) / 10000.0f
-                val rawLon = buffer.getInt(9) / 10000.0f
-                val lat = convertNmeaToDecimal(rawLat)
-                val lon = convertNmeaToDecimal(rawLon)
-                val speedKnots = (buffer.getShort(13).toInt() and 0xFFFF) / 100.0f
-                val course = (buffer.getShort(15).toInt() and 0xFFFF) / 100.0f
+                if (data.size < 17) return
 
-                Log.d("GPS_POS", "Lat: $lat Lon: $lon Speed: $speedKnots Course: $course")
-                
-                currentGpsSpeedKnots = speedKnots.toDouble()
-                latestSpeed = currentGpsSpeedKnots
-                
-                if (displayMode == 1 && !isConnected && !isGpsConnected) { 
-                    currentHeading = course.toDouble()
-                    latestHeading = currentHeading
-                    updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) 
-                }
-                
-                if (displayMode == 1) {
-                    runOnUiThread {
-                        binding.txtRawData.text = "GPS POS Time:$timeMs Lat:%.6f Lon:%.6f Spd:%.1f Crs:%.1f".format(lat, lon, speedKnots, course)
-                    }
-                }
+                val speedKnots = getU16LE(data, 13) * 0.01
+                val course = getU16LE(data, 15) * 0.01
 
-                if (isConnected && currentSeaState <= 2 && currentGpsSpeedKnots >= minGpsSpeedKnots) {
-                    val magH = (currentHeading + 360) % 360
-                    var diff = course.toDouble() - magH
-                    while (diff > 180) diff -= 360; while (diff < -180) diff += 360
-                    gpsHeadingOffset = 0.995 * gpsHeadingOffset + 0.005 * diff
-                    saveCalibration()
-                }
-            }
-            0x01, 0x02, 0xFF -> {
-                // Motor Command Echo
-                val port = buffer.getShort(1).toInt() and 0xFFFF
-                val stbd = buffer.getShort(3).toInt() and 0xFFFF
-                runOnUiThread {
-                    binding.txtRawData.text = "ECHO: CMD:%02X P:%d S:%d".format(header, port, stbd)
+                currentGpsSpeedKnots = speedKnots
+                latestSpeed = speedKnots
+
+                if (displayMode == 1 && !isConnected && !isGpsConnected) {
+                    currentHeading = course
+                    latestHeading = course
                 }
             }
         }
