@@ -64,10 +64,17 @@ class MainActivity : AppCompatActivity() {
     private var gyroCalibTimer: CountDownTimer? = null
     private var calDialog: AlertDialog? = null
 
-    // AHRS State (Kalman 1D)
+    // AHRS State (Multi-rate Kalman)
     private var currentHeading = 0.0
-    private var kfHeading = 0.0; private var kfP = 1.0
-    private val kfQ = 0.0005; private val kfR = 0.1
+    private var kfHeading = 0.0 // radians
+    private var kfP = 1.0
+    private val kfQ = 0.0005
+    private val kfR_mag_normal = 0.1
+    private val kfR_mag_low_weight = 0.8
+    private val kfR_gps = 0.05
+    private var lastMagUpdateTime = 0L
+    private var lastGpsKalmanUpdateTime = 0L
+    private var lastA3Timestamp = 0L
 
     // Sea State
     private val motionBuffer = mutableListOf<Double>()
@@ -334,9 +341,21 @@ class MainActivity : AppCompatActivity() {
 
     private val phoneLocationListener = object : LocationListener {
         override fun onLocationChanged(l: Location) {
-            if (isGpsConnected) return // BLE GPS takes priority
+            val now = System.currentTimeMillis()
+            // Phone GPS is automatically ignored if the external BLE GPS is connected and 0xA3 is available and valid (within 5 seconds)
+            if (isGpsConnected && (now - lastA3Timestamp < 5000)) return
+            
             currentGpsSpeedKnots = l.speed * 1.94384
             latestSpeed = currentGpsSpeedKnots
+            
+            // Only update GPS if boatSpeed > 0.8 m/s
+            if (l.speed > 0.8f && l.hasBearing() && now - lastGpsKalmanUpdateTime >= 1000) {
+                lastGpsKalmanUpdateTime = now
+                runKalmanUpdate(Math.toRadians(l.bearing.toDouble()), kfR_gps)
+                currentHeading = (Math.toDegrees(kfHeading) + 360.0) % 360.0
+                latestHeading = currentHeading
+            }
+
             if (!isConnected && l.hasBearing() && displayMode == 1) {
                 currentHeading = l.bearing.toDouble()
                 latestHeading = currentHeading
@@ -382,7 +401,6 @@ class MainActivity : AppCompatActivity() {
             override fun onServicesDiscovered(g: BluetoothGatt, s: Int) {
                 if (g.device.name != "AC6328_GPS") imuGattInstance = g
                 
-                // Determine active service UUID
                 val service = g.getService(SERVICE_AE30) ?: g.getService(SERVICE_AE00)
                 if (service != null && g.device.name != "AC6328_GPS") {
                     activeServiceUuid = service.uuid
@@ -397,7 +415,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 runOnUiThread { updateStatusText() }
             }
-            //override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) { processRawData(c.value) }
             override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
                 val dataCopy = c.value.clone()
                 workerHandler.post {
@@ -444,7 +461,7 @@ class MainActivity : AppCompatActivity() {
         when (header) {
 
             // =========================
-            // IMU + MAG (A1)
+            // IMU + MAG (A1) - 50Hz
             // =========================
             0xA1 -> {
                 if (data.size < 20) return
@@ -453,7 +470,6 @@ class MainActivity : AppCompatActivity() {
                 val dt = dtRaw.coerceIn(0.01, 0.05)
                 lastTimestamp = now
 
-                // ---- RAW (int → double only once)
                 var ax = getS16LE(data, 2).toDouble()
                 var ay = getS16LE(data, 4).toDouble()
                 var az = getS16LE(data, 6).toDouble()
@@ -466,7 +482,6 @@ class MainActivity : AppCompatActivity() {
                 var my = getS16LE(data, 16).toDouble()
                 var mz = getS16LE(data, 18).toDouble()
 
-                // ---- Calibration accumulation (no alloc)
                 if (isCalibratingMag) {
                     if (mx < minMx) minMx = mx; if (mx > maxMx) maxMx = mx
                     if (my < minMy) minMy = my; if (my > maxMy) maxMy = my
@@ -477,27 +492,21 @@ class MainActivity : AppCompatActivity() {
                     gyroCount++
                 }
 
-                // ---- Alignment
                 if (ACCT_ROTATED_180) {
                     ax = -ax; ay = -ay
                     gx = -gx; gy = -gy
                 }
 
-                // ---- Apply calibration (mag)
                 mx = (mx - offsetX) * scaleX
                 my = (my - offsetY) * scaleY
                 mz = (mz - offsetZ) * scaleZ
                 if (INVERT_MAG_Z) mz = -mz
 
-                // ---- Gyro scale
                 gx = (gx - gyroOffX) / gyroScaleDegS
                 gy = (gy - gyroOffY) / gyroScaleDegS
                 gz = (gz - gyroOffZ) / gyroScaleDegS
                 if (INVERT_GYRO_Z) gz = -gz
 
-                // =========================
-                // Tilt + Raw Mag Heading (compute ONCE)
-                // =========================
                 val amag = sqrt(ax * ax + ay * ay + az * az)
 
                 var rollDeg = 0.0
@@ -532,14 +541,20 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 // =========================
-                // Kalman (reuse computed tilt)
+                // Multi-rate Kalman
                 // =========================
-                currentHeading = runKalman(ax, ay, az, gx, gy, gz, mx, my, mz, dt)
+                runKalmanPredict(gz, dt) // Gyro at 50Hz
+                
+                if (now - lastMagUpdateTime >= 100) { // Mag at 10Hz
+                    lastMagUpdateTime = now
+                    // reduce mag weight when boatSpeed > 2.0 m/s (3.887 knots)
+                    val r = if (currentGpsSpeedKnots > 3.887) kfR_mag_low_weight else kfR_mag_normal
+                    runKalmanUpdate(Math.toRadians(rawMagHeading), r)
+                }
+                
+                currentHeading = (Math.toDegrees(kfHeading) + 360.0) % 360.0
                 latestHeading = currentHeading
 
-                // =========================
-                // Sea state (cheap)
-                // =========================
                 val motion = abs(amag * (1.0 / 2048.0) - 1.0) + abs(gz * 0.01)
                 motionBuffer.add(motion)
                 if (motionBuffer.size > BUFFER_SIZE) motionBuffer.removeAt(0)
@@ -561,17 +576,11 @@ class MainActivity : AppCompatActivity() {
                     else -> 9
                 }
 
-                // =========================
-                // UI (decoupled timing recommended)
-                // =========================
                 if (displayMode == 0 && now - lastUiUpdateTime > 50) {
                     lastUiUpdateTime = now
                     updateUi(ax, ay, az, mx, my, mz, rollDeg, pitchDeg, rawMagHeading)
                 }
 
-                // =========================
-                // Logging (non-blocking recommended)
-                // =========================
                 if (isLogging) {
                     val logLine = "$now,$ax,$ay,$az,$gx,$gy,$gz,$mx,$my,$mz,$currentHeading\n"
                     try {
@@ -583,19 +592,24 @@ class MainActivity : AppCompatActivity() {
             }
 
             // =========================
-            // GPS ORI (A2)
+            // GPS ORI (A2) - 1Hz
             // =========================
             0xA2 -> {
                 if (data.size < 17) return
-
                 val quality = data[5].toInt() and 0xFF
                 val pitch = getS16LE(data, 8) * 0.01
                 val roll = getS16LE(data, 10) * 0.01
                 val heading = getU16LE(data, 12) * 0.01
 
+                // Use A2 heading to update Kalman if quality=4, not speed dependent
+                if (quality == 4 && now - lastGpsKalmanUpdateTime >= 1000) {
+                    lastGpsKalmanUpdateTime = now
+                    runKalmanUpdate(Math.toRadians(heading), kfR_gps)
+                    currentHeading = (Math.toDegrees(kfHeading) + 360.0) % 360.0
+                    latestHeading = currentHeading
+                }
+
                 if (displayMode == 1) {
-                    currentHeading = heading
-                    latestHeading = heading
                     latestRoll = roll
                     latestPitch = pitch
                     updateUi(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, roll, pitch, 0.0)
@@ -603,16 +617,24 @@ class MainActivity : AppCompatActivity() {
             }
 
             // =========================
-            // GPS POS (A3)
+            // GPS POS (A3) - 1Hz
             // =========================
             0xA3 -> {
                 if (data.size < 17) return
-
                 val speedKnots = getU16LE(data, 13) * 0.01
                 val course = getU16LE(data, 15) * 0.01
 
+                lastA3Timestamp = now
                 currentGpsSpeedKnots = speedKnots
                 latestSpeed = speedKnots
+
+                // Only update GPS if boatSpeed > 0.8 m/s (1.555 knots)
+                if (speedKnots > 1.555 && now - lastGpsKalmanUpdateTime >= 1000) {
+                    lastGpsKalmanUpdateTime = now
+                    runKalmanUpdate(Math.toRadians(course), kfR_gps)
+                    currentHeading = (Math.toDegrees(kfHeading) + 360.0) % 360.0
+                    latestHeading = currentHeading
+                }
 
                 if (displayMode == 1 && !isConnected && !isGpsConnected) {
                     currentHeading = course
@@ -622,26 +644,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun convertNmeaToDecimal(nmea: Float): Double {
-        val absNmea = Math.abs(nmea)
-        val degrees = (absNmea / 100).toInt()
-        val minutes = absNmea - (degrees * 100)
-        val decimal = degrees + (minutes / 60.0)
-        return if (nmea < 0) -decimal else decimal
+    private fun runKalmanPredict(gzDeg: Double, dt: Double) {
+        kfHeading += Math.toRadians(gzDeg * dt)
+        kfP += kfQ
+        while (kfHeading > PI) kfHeading -= 2 * PI
+        while (kfHeading < -PI) kfHeading += 2 * PI
     }
 
-    private fun runKalman(ax: Double, ay: Double, az: Double, gxDeg: Double, gyDeg: Double, gzDeg: Double, mx: Double, my: Double, mz: Double, dt: Double): Double {
-        val amag = sqrt(ax*ax + ay*ay + az*az); if (amag == 0.0) return (Math.toDegrees(kfHeading) + 360) % 360
-        val nax = ax/amag; val nay = ay/amag; val naz = az/amag
-        val phi = atan2(nay, naz); val theta = atan2(-nax, nay * sin(phi) + naz * cos(phi))
-        val xh = mx * cos(theta) + my * sin(phi) * sin(theta) + mz * cos(phi) * sin(theta)
-        val yh = my * cos(phi) - mz * sin(phi)
-        val magHeading = atan2(yh, xh) 
-        kfHeading += Math.toRadians(gzDeg * dt); kfP += kfQ
-        var diff = magHeading - kfHeading; while (diff > PI) diff -= 2 * PI; while (diff < -PI) diff += 2 * PI
-        kfHeading += (kfP / (kfP + kfR)) * diff; kfP = (1.0 - (kfP / (kfP + kfR))) * kfP
-        while (kfHeading > PI) kfHeading -= 2 * PI; while (kfHeading < -PI) kfHeading += 2 * PI
-        return (Math.toDegrees(kfHeading) + 360) % 360
+    private fun runKalmanUpdate(measurementRad: Double, r: Double) {
+        var diff = measurementRad - kfHeading
+        while (diff > PI) diff -= 2 * PI
+        while (diff < -PI) diff += 2 * PI
+        
+        val k = kfP / (kfP + r)
+        kfHeading += k * diff
+        kfP = (1.0 - k) * kfP
+        
+        while (kfHeading > PI) kfHeading -= 2 * PI
+        while (kfHeading < -PI) kfHeading += 2 * PI
     }
 
     private fun startMagCalibration() {
@@ -686,16 +706,16 @@ class MainActivity : AppCompatActivity() {
         pidLastError = error
 
         // Map PID output to Differential Thrust
-        val throttle = if (motorMode == 1) 2000 else 750 
-        val diff = (output * 10).toInt() 
-        
+        val throttle = if (motorMode == 1) 2000 else 750
+        val diff = (output * 10).toInt()
+
         val pVal = (throttle + diff)
         val sVal = (throttle - diff)
-        
+
         val cmd = if (motorMode == 1) 0x02 else 0x01
         val maxVal = if (motorMode == 1) 10000 else 1000
         val minVal = if (motorMode == 1) 0 else 500
-        
+
         sendMotorCommand(imuGattInstance, cmd, pVal.coerceIn(minVal, maxVal), sVal.coerceIn(minVal, maxVal))
     }
 
@@ -711,15 +731,8 @@ class MainActivity : AppCompatActivity() {
             binding.txtSeaState.text = "Sea: $currentSeaState"
             binding.txtGpsInfo.text = "%.1f kn".format(currentGpsSpeedKnots)
             binding.txtGpsOffset.text = "%.1f°".format(gpsHeadingOffset)
-            
-            // Display Roll/Pitch/RawMag with color logic
             binding.txtRollPitch.text = "R:%.1f° P:%.1f° M:%.0f°".format(roll, pitch, rawMag)
-            if (abs(pitch) > 5.0 || abs(roll) > 15.0) {
-                binding.txtRollPitch.setTextColor(Color.RED)
-            } else {
-                binding.txtRollPitch.setTextColor(0xFF616161.toInt())
-            }
-
+            if (abs(pitch) > 5.0 || abs(roll) > 15.0) binding.txtRollPitch.setTextColor(Color.RED) else binding.txtRollPitch.setTextColor(0xFF616161.toInt())
             updatePidUi()
         }
     }
