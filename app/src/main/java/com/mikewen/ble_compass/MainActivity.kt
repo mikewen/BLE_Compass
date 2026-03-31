@@ -169,7 +169,6 @@ class MainActivity : AppCompatActivity() {
         prefs = getSharedPreferences("calib_prefs", Context.MODE_PRIVATE)
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         loadCalibration()
-        logFile = File(getExternalFilesDir(null), "raw_sensor_data.txt")
 
         binding.btnScan.setOnClickListener { checkPermissionsAndScan() }
         binding.btnCalibrateMag.setOnClickListener { startMagCalibration() }
@@ -189,7 +188,12 @@ class MainActivity : AppCompatActivity() {
         binding.btnPidM1.setOnClickListener { adjustTarget(-1.0) }
         binding.btnPidP1.setOnClickListener { adjustTarget(1.0) }
         binding.btnPidP10.setOnClickListener { adjustTarget(10.0) }
-        binding.btnPidStop.setOnClickListener { targetHeading = null; updatePidUi(); stopMotors() }
+        binding.btnPidStop.setOnClickListener { 
+            targetHeading = null
+            stopLogging()
+            updatePidUi()
+            stopMotors() 
+        }
         
         setupSpinners()
         setupPidInputs()
@@ -205,8 +209,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        logStream?.close()
-        logStream = null
+        stopLogging()
     }
 
     private fun toggleDisplayMode() {
@@ -237,24 +240,61 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toggleLogging() {
-        isLogging = !isLogging
-        if (isLogging) {
-            try {
-                if (logFile?.exists() == true) logFile?.delete()
-                logStream = FileOutputStream(logFile, true)
-            } catch (e: Exception) {
-                isLogging = false
-                Log.e("Logging", "Failed to open log stream", e)
-            }
-        } else {
-            logStream?.close()
-            logStream = null
-        }
-        binding.btnLogToggle.text = "Log: ${if (isLogging) "ON" else "OFF"}"
-        binding.btnLogToggle.backgroundTintList = ColorStateList.valueOf(if (isLogging) 0xFF4CAF50.toInt() else 0xFF9E9E9E.toInt())
+        if (isLogging) stopLogging() else startLogging()
     }
 
-    private fun setTarget(h: Double) { targetHeading = h; pidIntegral = 0.0; updatePidUi() }
+    private fun startLogging() {
+        if (isLogging) return
+        try {
+            logFile = File(getExternalFilesDir(null), "nav_log_${System.currentTimeMillis()}.txt")
+            logStream = FileOutputStream(logFile, true)
+            isLogging = true
+            runOnUiThread {
+                binding.btnLogToggle.text = "Log: ON"
+                binding.btnLogToggle.backgroundTintList = ColorStateList.valueOf(0xFF4CAF50.toInt())
+            }
+            writeLog("INFO", "Logging Started")
+        } catch (e: Exception) {
+            Log.e("Logging", "Failed to start", e)
+        }
+    }
+
+    private fun stopLogging() {
+        if (!isLogging) return
+        isLogging = false
+        val stream = logStream
+        logStream = null
+        workerHandler.post {
+            try {
+                stream?.write("${System.currentTimeMillis()},INFO,Logging Stopped\n".toByteArray())
+                stream?.flush()
+                stream?.close()
+            } catch (e: Exception) { }
+        }
+        runOnUiThread {
+            binding.btnLogToggle.text = "Log: OFF"
+            binding.btnLogToggle.backgroundTintList = ColorStateList.valueOf(0xFF9E9E9E.toInt())
+        }
+    }
+
+    private fun writeLog(tag: String, data: String) {
+        val stream = logStream ?: return
+        val line = "${System.currentTimeMillis()},$tag,$data\n"
+        workerHandler.post {
+            try {
+                stream.write(line.toByteArray())
+            } catch (e: Exception) {
+                Log.e("Logging", "Write failed", e)
+            }
+        }
+    }
+
+    private fun setTarget(h: Double) { 
+        if (targetHeading == null) startLogging()
+        targetHeading = h
+        pidIntegral = 0.0
+        updatePidUi() 
+    }
     private fun adjustTarget(d: Double) { targetHeading?.let { setTarget((it + d + 360) % 360) } }
 
     private fun setupSpinners() {
@@ -348,6 +388,10 @@ class MainActivity : AppCompatActivity() {
             currentGpsSpeedKnots = l.speed * 1.94384
             latestSpeed = currentGpsSpeedKnots
             
+            if (isLogging) {
+                writeLog("PHONE_GPS", "%.3f,%.2f".format(l.speed, l.bearing))
+            }
+
             // Only update GPS if boatSpeed > 0.8 m/s
             if (l.speed > 0.8f && l.hasBearing() && now - lastGpsKalmanUpdateTime >= 1000) {
                 lastGpsKalmanUpdateTime = now
@@ -555,6 +599,11 @@ class MainActivity : AppCompatActivity() {
                 currentHeading = (Math.toDegrees(kfHeading) + 360.0) % 360.0
                 latestHeading = currentHeading
 
+                if (isLogging) {
+                    writeLog("A1", "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f".format(
+                        ax, ay, az, gx, gy, gz, mx, my, mz, rawMagHeading, currentHeading))
+                }
+
                 val motion = abs(amag * (1.0 / 2048.0) - 1.0) + abs(gz * 0.01)
                 motionBuffer.add(motion)
                 if (motionBuffer.size > BUFFER_SIZE) motionBuffer.removeAt(0)
@@ -580,15 +629,6 @@ class MainActivity : AppCompatActivity() {
                     lastUiUpdateTime = now
                     updateUi(ax, ay, az, mx, my, mz, rollDeg, pitchDeg, rawMagHeading)
                 }
-
-                if (isLogging) {
-                    val logLine = "$now,$ax,$ay,$az,$gx,$gy,$gz,$mx,$my,$mz,$currentHeading\n"
-                    try {
-                        logStream?.write(logLine.toByteArray())
-                    } catch (e: Exception) {
-                        Log.e("Logging", "Write failed", e)
-                    }
-                }
             }
 
             // =========================
@@ -600,6 +640,10 @@ class MainActivity : AppCompatActivity() {
                 val pitch = getS16LE(data, 8) * 0.01
                 val roll = getS16LE(data, 10) * 0.01
                 val heading = getU16LE(data, 12) * 0.01
+
+                if (isLogging) {
+                    writeLog("A2", "$quality,%.2f,%.2f,%.2f".format(pitch, roll, heading))
+                }
 
                 // Use A2 heading to update Kalman if quality=4, not speed dependent
                 if (quality == 4 && now - lastGpsKalmanUpdateTime >= 1000) {
@@ -627,6 +671,10 @@ class MainActivity : AppCompatActivity() {
                 lastA3Timestamp = now
                 currentGpsSpeedKnots = speedKnots
                 latestSpeed = speedKnots
+
+                if (isLogging) {
+                    writeLog("A3", "%.2f,%.2f".format(speedKnots, course))
+                }
 
                 // Only update GPS if boatSpeed > 0.8 m/s (1.555 knots)
                 if (speedKnots > 1.555 && now - lastGpsKalmanUpdateTime >= 1000) {
@@ -697,6 +745,7 @@ class MainActivity : AppCompatActivity() {
         if (abs(error) < activeDb) { 
             pidIntegral = 0.0
             stopMotors() 
+            if (isLogging) writeLog("MOTOR", "OFF,0,0,%.2f,0".format(error))
             return 
         }
         
@@ -717,6 +766,9 @@ class MainActivity : AppCompatActivity() {
         val minVal = if (motorMode == 1) 0 else 500
 
         sendMotorCommand(imuGattInstance, cmd, pVal.coerceIn(minVal, maxVal), sVal.coerceIn(minVal, maxVal))
+        if (isLogging) {
+            writeLog("MOTOR", "$cmd,$pVal,$sVal,%.2f,%.2f".format(error, output))
+        }
     }
 
     private fun stopMotors() {
