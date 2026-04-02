@@ -77,7 +77,7 @@ class MainActivity : AppCompatActivity() {
     private var lastGpsKalmanUpdateTime = 0L
     private var lastA3Timestamp = 0L
 
-    // Declination handling
+    // Declination handling (Persistent)
     private var magneticDeclination = 0.0f
     private var lastDeclinationUpdate = 0L
 
@@ -115,6 +115,7 @@ class MainActivity : AppCompatActivity() {
         val CHAR_MOTOR = UUID.fromString("0000ae03-0000-1000-8000-00805f9b34fb")
 
         var imuGattInstance: BluetoothGatt? = null
+        var gpsGattInstance: BluetoothGatt? = null
         var activeServiceUuid: UUID? = null
         var latestHeading = 0.0
         var latestSpeed = 0.0
@@ -125,9 +126,10 @@ class MainActivity : AppCompatActivity() {
 
         @SuppressLint("MissingPermission")
         fun sendMotorCommand(gatt: BluetoothGatt?, cmd: Int, port: Int, stbd: Int) {
-            val deviceGatt = gatt ?: imuGattInstance ?: return
-            val serviceUuid = activeServiceUuid ?: return
-            val service = deviceGatt.getService(serviceUuid) ?: return
+            // Priority order: explicit gatt > external GPS device > IMU device
+            val deviceGatt = gatt ?: gpsGattInstance ?: imuGattInstance ?: return
+            
+            val service = deviceGatt.getService(SERVICE_AE30) ?: deviceGatt.getService(SERVICE_AE00) ?: return
             val characteristic = service.getCharacteristic(CHAR_MOTOR) ?: return
             
             val data = ByteArray(5)
@@ -342,6 +344,7 @@ class MainActivity : AppCompatActivity() {
         minGpsSpeedKnots = prefs.getFloat("min_gps_speed", 2.0f).toDouble(); deadband = prefs.getFloat("pid_deadband", 3.0f).toDouble()
         isAutoDeadband = prefs.getBoolean("auto_deadband", false)
         pidKp = prefs.getFloat("pid_kp", 0.8f).toDouble(); pidKi = prefs.getFloat("pid_ki", 0.02f).toDouble(); pidKd = prefs.getFloat("pid_kd", 0.5f).toDouble()
+        magneticDeclination = prefs.getFloat("mag_declination", 0.0f)
     }
 
     private fun saveCalibration() {
@@ -353,6 +356,7 @@ class MainActivity : AppCompatActivity() {
             putFloat("min_gps_speed", minGpsSpeedKnots.toFloat()); putFloat("pid_deadband", deadband.toFloat())
             putBoolean("auto_deadband", isAutoDeadband)
             putFloat("pid_kp", pidKp.toFloat()); putFloat("pid_ki", pidKi.toFloat()); putFloat("pid_kd", pidKd.toFloat())
+            putFloat("mag_declination", magneticDeclination)
             apply()
         }
     }
@@ -386,10 +390,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateDeclination(l: Location) {
         val now = System.currentTimeMillis()
-        //if (now - lastDeclinationUpdate > 600000) { // Update every 10 mins
-        if (now - lastDeclinationUpdate > 6000000) { // Update every 100 mins
+        if (now - lastDeclinationUpdate > 600000) { // Update every 10 mins
             val field = GeomagneticField(l.latitude.toFloat(), l.longitude.toFloat(), l.altitude.toFloat(), now)
-            magneticDeclination = field.declination
+            if (field.declination != magneticDeclination) {
+                magneticDeclination = field.declination
+                saveCalibration()
+            }
             lastDeclinationUpdate = now
             if (isLogging) writeLog("DECL", "%.4f at %.4f,%.4f".format(magneticDeclination, l.latitude, l.longitude))
         }
@@ -442,12 +448,26 @@ class MainActivity : AppCompatActivity() {
             override fun onConnectionStateChange(g: BluetoothGatt, s: Int, newState: Int) {
                 runOnUiThread {
                     if (newState == BluetoothProfile.STATE_CONNECTED) {
-                        if (name == "AC6328_GPS") isGpsConnected = true else isConnected = true
+                        if (name == "GPS_PWM") {
+                            isGpsConnected = true
+                            gpsGattInstance = g
+                        } else {
+                            isConnected = true
+                            imuGattInstance = g
+                        }
                         g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                         g.discoverServices()
                     } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                        if (name == "AC6328_GPS") { isGpsConnected = false; gpsGatt = null } 
-                        else { isConnected = false; imuGatt = null; imuGattInstance = null }
+                        if (name == "GPS_PWM") { 
+                            isGpsConnected = false
+                            gpsGatt = null
+                            gpsGattInstance = null
+                        } 
+                        else { 
+                            isConnected = false
+                            imuGatt = null
+                            imuGattInstance = null 
+                        }
                         
                         if (!isConnected && !isGpsConnected) {
                             resetDisplay()
@@ -461,10 +481,8 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             override fun onServicesDiscovered(g: BluetoothGatt, s: Int) {
-                if (g.device.name != "AC6328_GPS") imuGattInstance = g
-                
                 val service = g.getService(SERVICE_AE30) ?: g.getService(SERVICE_AE00)
-                if (service != null && g.device.name != "AC6328_GPS") {
+                if (service != null && g.device.name?.startsWith("IMU_") == true) {
                     activeServiceUuid = service.uuid
                 }
 
@@ -485,7 +503,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         
-        if (name == "AC6328_GPS") {
+        if (name == "GPS_PWM") {
             gpsGatt = dev.connectGatt(this, false, callback)
         } else {
             imuGatt = dev.connectGatt(this, false, callback)
@@ -804,14 +822,14 @@ class MainActivity : AppCompatActivity() {
         val maxVal = if (motorMode == 1) 10000 else 1000
         val minVal = if (motorMode == 1) 0 else 500
 
-        sendMotorCommand(imuGattInstance, cmd, pVal.coerceIn(minVal, maxVal), sVal.coerceIn(minVal, maxVal))
+        sendMotorCommand(null, cmd, pVal.coerceIn(minVal, maxVal), sVal.coerceIn(minVal, maxVal))
         if (isLogging) {
             writeLog("MOTOR", "$cmd,$pVal,$sVal,%.2f,%.2f".format(error, output))
         }
     }
 
     private fun stopMotors() {
-        sendMotorCommand(imuGattInstance, 0xFF, 0, 0)
+        sendMotorCommand(null, 0xFF, 0, 0)
     }
 
     private fun updateUi(ax: Double, ay: Double, az: Double, mx: Double, my: Double, mz: Double, roll: Double, pitch: Double, rawMag: Double) {
