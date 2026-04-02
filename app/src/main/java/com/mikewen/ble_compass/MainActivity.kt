@@ -10,6 +10,7 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.hardware.GeomagneticField
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -75,6 +76,10 @@ class MainActivity : AppCompatActivity() {
     private var lastMagUpdateTime = 0L
     private var lastGpsKalmanUpdateTime = 0L
     private var lastA3Timestamp = 0L
+
+    // Declination handling
+    private var magneticDeclination = 0.0f
+    private var lastDeclinationUpdate = 0L
 
     // Sea State
     private val motionBuffer = mutableListOf<Double>()
@@ -379,9 +384,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateDeclination(l: Location) {
+        val now = System.currentTimeMillis()
+        //if (now - lastDeclinationUpdate > 600000) { // Update every 10 mins
+        if (now - lastDeclinationUpdate > 6000000) { // Update every 100 mins
+            val field = GeomagneticField(l.latitude.toFloat(), l.longitude.toFloat(), l.altitude.toFloat(), now)
+            magneticDeclination = field.declination
+            lastDeclinationUpdate = now
+            if (isLogging) writeLog("DECL", "%.4f at %.4f,%.4f".format(magneticDeclination, l.latitude, l.longitude))
+        }
+    }
+
     private val phoneLocationListener = object : LocationListener {
         override fun onLocationChanged(l: Location) {
             val now = System.currentTimeMillis()
+            updateDeclination(l)
+
             // Phone GPS is automatically ignored if the external BLE GPS is connected and 0xA3 is available and valid (within 5 seconds)
             if (isGpsConnected && (now - lastA3Timestamp < 5000)) return
             
@@ -490,6 +508,13 @@ class MainActivity : AppCompatActivity() {
         return (d[i].toInt() and 0xFF) or ((d[i + 1].toInt() and 0xFF) shl 8)
     }
 
+    private inline fun getS32LE(d: ByteArray, i: Int): Int {
+        return (d[i].toInt() and 0xFF) or
+                ((d[i + 1].toInt() and 0xFF) shl 8) or
+                ((d[i + 2].toInt() and 0xFF) shl 16) or
+                ((d[i + 3].toInt() and 0xFF) shl 24)
+    }
+
     private inline fun getU32LE(d: ByteArray, i: Int): Long {
         return ((d[i].toLong() and 0xFF)) or
                 ((d[i + 1].toLong() and 0xFF) shl 8) or
@@ -591,9 +616,12 @@ class MainActivity : AppCompatActivity() {
                 
                 if (now - lastMagUpdateTime >= 100) { // Mag at 10Hz
                     lastMagUpdateTime = now
+                    // Apply Magnetic Declination correction to align with True North (GPS reference)
+                    val correctedMagHeading = (rawMagHeading + magneticDeclination + 360.0) % 360.0
+                    
                     // reduce mag weight when boatSpeed > 2.0 m/s (3.887 knots)
                     val r = if (currentGpsSpeedKnots > 3.887) kfR_mag_low_weight else kfR_mag_normal
-                    runKalmanUpdate(Math.toRadians(rawMagHeading), r)
+                    runKalmanUpdate(Math.toRadians(correctedMagHeading), r)
                 }
                 
                 currentHeading = (Math.toDegrees(kfHeading) + 360.0) % 360.0
@@ -664,9 +692,20 @@ class MainActivity : AppCompatActivity() {
             // GPS POS (A3) - 1Hz
             // =========================
             0xA3 -> {
-                if (data.size < 17) return
+                if (data.size < 21) return
+                val latRaw = getS32LE(data, 5)
+                val lonRaw = getS32LE(data, 9)
                 val speedKnots = getU16LE(data, 13) * 0.01
                 val course = getU16LE(data, 15) * 0.01
+                
+                // Update declination if we have valid coordinates
+                if (latRaw != 0 && lonRaw != 0) {
+                    val l = Location("BLE").apply {
+                        latitude = latRaw * 1e-7
+                        longitude = lonRaw * 1e-7
+                    }
+                    updateDeclination(l)
+                }
 
                 lastA3Timestamp = now
                 currentGpsSpeedKnots = speedKnots
