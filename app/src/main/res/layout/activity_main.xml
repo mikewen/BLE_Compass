@@ -144,15 +144,29 @@
             android:textSize="100sp"
             android:textStyle="bold" />
 
-        <TextView
-            android:id="@+id/txtRollPitch"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center"
-            android:text="R: 0.0° P: 0.0°"
-            android:textColor="#616161"
-            android:textSize="24sp"
-            android:textStyle="bold" />
+            android:orientation="horizontal"
+            android:gravity="center">
+            <TextView
+                android:id="@+id/txtThrottleBig"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="T: 0"
+                android:textColor="#2E7D32"
+                android:textSize="24sp"
+                android:textStyle="bold" />
+            <TextView
+                android:id="@+id/txtRollPitch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:text="R: 0.0° P: 0.0°"
+                android:textColor="#616161"
+                android:textSize="24sp"
+                android:textStyle="bold" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -198,6 +212,26 @@
             android:layout_marginTop="4dp"
             android:text="STOP AUTO"
             android:backgroundTint="#F44336" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp">
+            <Button android:id="@+id/btnThrM5" android:layout_width="0dp" android:layout_height="50dp" android:layout_weight="1" android:text="-5" android:backgroundTint="#607D8B" />
+            <Button android:id="@+id/btnThrM2" android:layout_width="0dp" android:layout_height="50dp" android:layout_weight="1" android:text="-2" android:layout_marginStart="4dp" android:backgroundTint="#607D8B" />
+            <TextView
+                android:id="@+id/txtThrottle"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1.5"
+                android:gravity="center"
+                android:text="THR"
+                android:textStyle="bold"
+                android:textSize="16sp" />
+            <Button android:id="@+id/btnThrP2" android:layout_width="0dp" android:layout_height="50dp" android:layout_weight="1" android:text="+2" android:layout_marginStart="4dp" android:backgroundTint="#607D8B" />
+            <Button android:id="@+id/btnThrP5" android:layout_width="0dp" android:layout_height="50dp" android:layout_weight="1" android:text="+5" android:layout_marginStart="4dp" android:backgroundTint="#607D8B" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
